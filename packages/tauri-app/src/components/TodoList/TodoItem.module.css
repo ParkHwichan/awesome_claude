@@ -1,0 +1,68 @@
+.item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  transition: background-color 0.15s;
+}
+
+.item:hover {
+  background-color: var(--bg-tertiary);
+}
+
+.item.in_progress {
+  background-color: rgba(88, 166, 255, 0.1);
+}
+
+.iconWrapper {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon {
+  width: 16px;
+  height: 16px;
+}
+
+.completed {
+  color: var(--accent-green);
+}
+
+.inProgress {
+  color: var(--accent-blue);
+  animation: spin 1.5s linear infinite;
+}
+
+.pending {
+  color: var(--text-muted);
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+}
+
+.text {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.item.completed .text {
+  color: var(--text-secondary);
+  text-decoration: line-through;
+}

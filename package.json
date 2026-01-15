@@ -1,0 +1,28 @@
+{
+  "name": "awesome-claude",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code workflow visualization and management",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "dev:mcp": "pnpm --filter @awesome-claude/mcp-server dev",
+    "dev:app": "pnpm --filter @awesome-claude/tauri-app dev",
+    "dev:tauri": "pnpm --filter @awesome-claude/tauri-app tauri:dev",
+    "build": "pnpm -r build",
+    "build:shared": "pnpm --filter @awesome-claude/shared build",
+    "build:mcp": "pnpm --filter @awesome-claude/mcp-server build",
+    "build:mcp-exe": "pnpm --filter @awesome-claude/mcp-server build:exe",
+    "build:tauri": "pnpm --filter @awesome-claude/tauri-app tauri:build",
+    "build:all": "pnpm build:shared && pnpm build:mcp-exe && pnpm build:tauri",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "clean": "pnpm -r clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}
