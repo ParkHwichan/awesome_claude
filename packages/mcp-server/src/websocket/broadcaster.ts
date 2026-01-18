@@ -1,143 +1,173 @@
-import { WebSocketServer, WebSocket } from 'ws';
-import { v4 as uuidv4 } from 'uuid';
-import type { AppEvent, ConnectionEstablishedEvent } from '@awesome-claude/shared';
+import WebSocket from 'ws';
+import type { AppEvent } from '@awesome-claude/shared';
+import { getCurrentSessionId } from '../state.js';
 
-const VERSION = '0.1.0';
-
-interface Client {
-  id: string;
-  ws: WebSocket;
-  subscribedWorkflows: Set<string>;
-}
+const TAURI_WS_URL = 'ws://127.0.0.1:4000';
+const RECONNECT_INTERVAL = 3000;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 class WebSocketBroadcaster {
-  private wss: WebSocketServer | null = null;
-  private clients: Map<string, Client> = new Map();
-  private pingInterval: NodeJS.Timeout | null = null;
+  private ws: WebSocket | null = null;
+  private messageQueue: AppEvent[] = [];
+  private reconnectAttempts = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private isConnecting = false;
 
-  start(port: number = 3001): void {
-    if (this.wss) {
-      console.log('WebSocket server already running');
+  connect(): void {
+    if (this.ws || this.isConnecting) {
       return;
     }
 
-    this.wss = new WebSocketServer({ port });
-    console.log(`WebSocket server started on port ${port}`);
+    this.isConnecting = true;
 
-    this.wss.on('connection', (ws) => {
-      const clientId = uuidv4();
-      const client: Client = {
-        id: clientId,
-        ws,
-        subscribedWorkflows: new Set(),
-      };
-      this.clients.set(clientId, client);
+    try {
+      this.ws = new WebSocket(TAURI_WS_URL);
 
-      console.log(`Client connected: ${clientId}`);
+      this.ws.on('open', () => {
+        console.error(`Connected to Tauri WebSocket hub at ${TAURI_WS_URL}`);
+        this.isConnecting = false;
+        this.reconnectAttempts = 0;
 
-      // Send connection established event
-      const event: ConnectionEstablishedEvent = {
-        type: 'connection:established',
-        timestamp: new Date().toISOString(),
-        payload: {
-          clientId,
-          serverVersion: VERSION,
-        },
-      };
-      this.sendToClient(client, event);
+        // Register this MCP server's session with the hub
+        const sessionId = getCurrentSessionId();
+        if (sessionId) {
+          this.send({
+            type: 'mcp:register',
+            timestamp: new Date().toISOString(),
+            payload: { sessionId },
+          } as any);
+          console.error(`Registered session ${sessionId} with WebSocket hub`);
+        }
 
-      ws.on('message', (data) => {
+        // Flush queued messages
+        console.error(`Flushing ${this.messageQueue.length} queued messages`);
+        for (const event of this.messageQueue) {
+          this.send(event);
+          console.error(`Flushed event: ${event.type}`);
+        }
+        this.messageQueue = [];
+      });
+
+      this.ws.on('message', (data) => {
         try {
           const message = JSON.parse(data.toString());
-          this.handleClientMessage(client, message);
+          if (message.type === 'connection:established') {
+            console.error(`WebSocket connection established, clientId: ${message.payload?.clientId}`);
+          }
         } catch {
-          console.error('Failed to parse client message');
+          // Ignore parse errors
         }
       });
 
-      ws.on('close', () => {
-        console.log(`Client disconnected: ${clientId}`);
-        this.clients.delete(clientId);
+      this.ws.on('close', () => {
+        console.error('Disconnected from Tauri WebSocket hub');
+        this.ws = null;
+        this.isConnecting = false;
+        this.scheduleReconnect();
       });
 
-      ws.on('error', (error) => {
-        console.error(`Client error: ${clientId}`, error);
-        this.clients.delete(clientId);
+      this.ws.on('error', (error) => {
+        // Only log if not a connection refused error (Tauri might not be running)
+        if ((error as any).code !== 'ECONNREFUSED') {
+          console.error('WebSocket error:', error.message);
+        }
+        this.ws = null;
+        this.isConnecting = false;
+        this.scheduleReconnect();
       });
-    });
-
-    // Start ping interval
-    this.pingInterval = setInterval(() => {
-      this.broadcast({ type: 'ping', timestamp: new Date().toISOString() });
-    }, 30000);
-  }
-
-  stop(): void {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-
-    if (this.wss) {
-      for (const client of this.clients.values()) {
-        client.ws.close();
-      }
-      this.clients.clear();
-      this.wss.close();
-      this.wss = null;
-      console.log('WebSocket server stopped');
+    } catch (error) {
+      this.isConnecting = false;
+      this.scheduleReconnect();
     }
   }
 
-  private handleClientMessage(client: Client, message: any): void {
-    switch (message.type) {
-      case 'subscribe':
-        if (message.workflowId) {
-          client.subscribedWorkflows.add(message.workflowId);
-          console.log(`Client ${client.id} subscribed to workflow ${message.workflowId}`);
-        }
-        break;
-      case 'unsubscribe':
-        if (message.workflowId) {
-          client.subscribedWorkflows.delete(message.workflowId);
-          console.log(`Client ${client.id} unsubscribed from workflow ${message.workflowId}`);
-        }
-        break;
-      case 'pong':
-        // Client responded to ping
-        break;
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) {
+      return;
     }
+
+    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.error(`Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Tauri app may not be running.`);
+      return;
+    }
+
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, RECONNECT_INTERVAL);
   }
 
-  private sendToClient(client: Client, event: AppEvent): void {
-    if (client.ws.readyState === WebSocket.OPEN) {
-      client.ws.send(JSON.stringify(event));
+  disconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+
+    this.messageQueue = [];
+    console.error('WebSocket client stopped');
+  }
+
+  private send(event: AppEvent): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(event));
     }
   }
 
   broadcast(event: AppEvent): void {
-    const message = JSON.stringify(event);
-    for (const client of this.clients.values()) {
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(message);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.send(event);
+    } else {
+      // Queue message for when connection is established
+      this.messageQueue.push(event);
+      if (this.messageQueue.length > 100) {
+        this.messageQueue.shift();
+      }
+
+      // Try to connect if not already
+      if (!this.ws && !this.isConnecting) {
+        this.connect();
       }
     }
   }
 
   broadcastToWorkflow(workflowId: string, event: AppEvent): void {
-    const message = JSON.stringify(event);
-    for (const client of this.clients.values()) {
-      if (
-        client.ws.readyState === WebSocket.OPEN &&
-        (client.subscribedWorkflows.has(workflowId) || client.subscribedWorkflows.size === 0)
-      ) {
-        client.ws.send(message);
-      }
-    }
+    this.broadcast(event);
   }
 
-  getConnectedClients(): number {
-    return this.clients.size;
+  broadcastToProject(projectId: string, event: AppEvent): void {
+    this.broadcast(event);
+  }
+
+  isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  // Legacy methods kept for compatibility
+  start(): Promise<number> {
+    this.connect();
+    return Promise.resolve(4000);
+  }
+
+  stop(): void {
+    this.disconnect();
+  }
+
+  isRunning(): boolean {
+    return this.isConnected();
+  }
+
+  getPort(): number {
+    return 4000;
+  }
+
+  getClientCount(): number {
+    return this.isConnected() ? 1 : 0;
   }
 }
 

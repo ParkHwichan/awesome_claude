@@ -1,108 +1,23 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { AppEvent, EventType, EventHandler } from '@awesome-claude/shared';
+import { invoke } from '@tauri-apps/api/core';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import type { Session, AppEvent, EventType, EventHandler } from '@awesome-claude/shared';
 
-interface WebSocketOptions {
-  url: string;
-  autoConnect?: boolean;
-  reconnectInterval?: number;
-  maxReconnectAttempts?: number;
-}
-
-interface WebSocketState {
+interface ConnectionState {
   isConnected: boolean;
-  clientId: string | null;
   error: string | null;
 }
 
-export function useWebSocket(options: WebSocketOptions) {
-  const {
-    url,
-    autoConnect = true,
-    reconnectInterval = 3000,
-    maxReconnectAttempts = 5,
-  } = options;
-
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectAttemptsRef = useRef(0);
+export function useWebSocket() {
   const handlersRef = useRef<Map<EventType, Set<EventHandler<any>>>>(new Map());
+  const unlistenRef = useRef<UnlistenFn | null>(null);
 
-  const [state, setState] = useState<WebSocketState>({
+  const [state, setState] = useState<ConnectionState>({
     isConnected: false,
-    clientId: null,
     error: null,
   });
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return;
-    }
-
-    try {
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        console.log('WebSocket connected');
-        reconnectAttemptsRef.current = 0;
-        setState((prev) => ({ ...prev, isConnected: true, error: null }));
-      };
-
-      ws.onclose = () => {
-        console.log('WebSocket disconnected');
-        setState((prev) => ({ ...prev, isConnected: false, clientId: null }));
-
-        // Attempt reconnection
-        if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-          reconnectAttemptsRef.current++;
-          setTimeout(connect, reconnectInterval);
-        }
-      };
-
-      ws.onerror = (event) => {
-        console.error('WebSocket error:', event);
-        setState((prev) => ({ ...prev, error: 'Connection error' }));
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data: AppEvent = JSON.parse(event.data);
-
-          // Handle connection established
-          if (data.type === 'connection:established') {
-            setState((prev) => ({
-              ...prev,
-              clientId: (data as any).payload.clientId,
-            }));
-          }
-
-          // Handle ping/pong
-          if (data.type === 'ping') {
-            ws.send(JSON.stringify({ type: 'pong' }));
-            return;
-          }
-
-          // Dispatch to handlers
-          const handlers = handlersRef.current.get(data.type);
-          if (handlers) {
-            handlers.forEach((handler) => handler(data));
-          }
-        } catch (err) {
-          console.error('Failed to parse WebSocket message:', err);
-        }
-      };
-    } catch (err) {
-      console.error('Failed to create WebSocket:', err);
-      setState((prev) => ({ ...prev, error: 'Failed to connect' }));
-    }
-  }, [url, reconnectInterval, maxReconnectAttempts]);
-
-  const disconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-  }, []);
-
+  // Subscribe to event type
   const subscribe = useCallback(
     <T extends AppEvent>(eventType: EventType, handler: EventHandler<T>) => {
       if (!handlersRef.current.has(eventType)) {
@@ -120,33 +35,78 @@ export function useWebSocket(options: WebSocketOptions) {
     []
   );
 
-  const subscribeToWorkflow = useCallback((workflowId: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'subscribe', workflowId }));
+  // Check if any MCP clients are connected
+  const checkConnection = useCallback(async () => {
+    try {
+      const sessions = await invoke<Session[]>('get_sessions');
+      const activeSessions = sessions.filter((s) => s.status !== 'disconnected');
+      setState({
+        isConnected: activeSessions.length > 0,
+        error: null,
+      });
+    } catch (err) {
+      setState({
+        isConnected: false,
+        error: String(err),
+      });
     }
   }, []);
 
-  const unsubscribeFromWorkflow = useCallback((workflowId: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'unsubscribe', workflowId }));
-    }
-  }, []);
-
+  // Setup Tauri event listener
   useEffect(() => {
-    if (autoConnect) {
-      connect();
-    }
-    return () => {
-      disconnect();
+    // Listen to mcp-event from Tauri backend
+    const setupListener = async () => {
+      unlistenRef.current = await listen<{ type: string; [key: string]: unknown }>('mcp-event', (event) => {
+        const data = event.payload;
+        const eventType = data.type;
+
+        // Check for MCP client connection/disconnection to update status
+        if (eventType === 'connection:established' || eventType === 'mcp:client_disconnected') {
+          checkConnection();
+        }
+
+        // Dispatch to handlers
+        const handlers = handlersRef.current.get(eventType as EventType);
+        if (handlers) {
+          handlers.forEach((handler) => handler(data as unknown as AppEvent));
+        }
+      });
     };
-  }, [autoConnect, connect, disconnect]);
+
+    setupListener();
+
+    // Initial connection check
+    checkConnection();
+
+    // Periodic connection check
+    const interval = setInterval(checkConnection, 5000);
+
+    return () => {
+      if (unlistenRef.current) {
+        unlistenRef.current();
+      }
+      clearInterval(interval);
+    };
+  }, [checkConnection]);
+
+  // No-op functions for compatibility
+  const connect = useCallback(() => {}, []);
+  const disconnect = useCallback(() => {}, []);
+  const subscribeToWorkflow = useCallback((_workflowId: string) => {}, []);
+  const unsubscribeFromWorkflow = useCallback((_workflowId: string) => {}, []);
+  const subscribeToProject = useCallback((_projectId: string) => {}, []);
+  const unsubscribeFromProject = useCallback((_projectId: string) => {}, []);
 
   return {
     ...state,
+    clientId: null,
+    connectedPorts: [], // Deprecated
     connect,
     disconnect,
     subscribe,
     subscribeToWorkflow,
     unsubscribeFromWorkflow,
+    subscribeToProject,
+    unsubscribeFromProject,
   };
 }

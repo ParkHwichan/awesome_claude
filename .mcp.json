@@ -1,5 +1,8 @@
 {
   "mcpServers": {
+    "awesome-claude": {
+      "command": "C:\\Dev\\awesome-claude\\packages\\tauri-app\\src-tauri\\binaries\\awesome-claude-mcp-x86_64-pc-windows-msvc.exe"
+    },
     "shadcn": {
       "command": "npx",
       "args": [

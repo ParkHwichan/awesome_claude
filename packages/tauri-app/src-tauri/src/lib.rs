@@ -1,92 +1,57 @@
 mod commands;
+mod database;
+mod websocket;
 
-use tauri::Manager;
-use tauri_plugin_shell::ShellExt;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use websocket::WebSocketHub;
+use std::time::Duration;
 
-pub struct McpServerState {
-    pub child: Arc<Mutex<Option<tauri_plugin_shell::process::CommandChild>>>,
-}
+const WEBSOCKET_PORT: u16 = 4000;
+const CLEANUP_INTERVAL_SECS: u64 = 10;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(McpServerState {
-            child: Arc::new(Mutex::new(None)),
-        })
         .setup(|app| {
-            let app_handle = app.handle().clone();
+            println!("Awesome Claude started");
 
-            // Start MCP server sidecar on app startup
+            // Start WebSocket hub server
+            let app_handle = app.handle().clone();
+            let ws_hub = WebSocketHub::new(WEBSOCKET_PORT);
+
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = start_mcp_sidecar(&app_handle).await {
-                    eprintln!("Failed to start MCP server sidecar: {}", e);
+                if let Err(e) = ws_hub.start(app_handle).await {
+                    eprintln!("Failed to start WebSocket hub: {}", e);
+                }
+            });
+
+            // Start periodic dead session cleanup
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(CLEANUP_INTERVAL_SECS)).await;
+                    match database::cleanup_dead_sessions() {
+                        Ok(count) if count > 0 => {
+                            println!("Cleaned up {} dead session(s)", count);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to cleanup dead sessions: {}", e);
+                        }
+                        _ => {}
+                    }
                 }
             });
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let app_handle = window.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let state = app_handle.state::<McpServerState>();
-                    let mut child_guard = state.child.lock().await;
-                    if let Some(child) = child_guard.take() {
-                        let _ = child.kill();
-                    }
-                });
-            }
-        })
         .invoke_handler(tauri::generate_handler![
-            commands::get_mcp_server_status,
-            commands::restart_mcp_server,
+            commands::get_initial_data,
+            commands::get_projects,
+            commands::get_sessions,
+            commands::get_tickets,
+            commands::cleanup_dead_sessions,
+            commands::update_ticket,
+            commands::delete_ticket,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-async fn start_mcp_sidecar(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let shell = app_handle.shell();
-
-    let sidecar = shell
-        .sidecar("binaries/awesome-claude-mcp")
-        .map_err(|e| format!("Failed to create sidecar command: {}", e))?;
-
-    let (mut rx, child) = sidecar
-        .spawn()
-        .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
-
-    // Store the child process
-    let state = app_handle.state::<McpServerState>();
-    let mut child_guard = state.child.lock().await;
-    *child_guard = Some(child);
-
-    // Log sidecar output
-    tauri::async_runtime::spawn(async move {
-        use tauri_plugin_shell::process::CommandEvent;
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(line) => {
-                    println!("[MCP Server] {}", String::from_utf8_lossy(&line));
-                }
-                CommandEvent::Stderr(line) => {
-                    eprintln!("[MCP Server] {}", String::from_utf8_lossy(&line));
-                }
-                CommandEvent::Error(err) => {
-                    eprintln!("[MCP Server Error] {}", err);
-                }
-                CommandEvent::Terminated(payload) => {
-                    println!("[MCP Server] Terminated with code: {:?}", payload.code);
-                    break;
-                }
-                _ => {}
-            }
-        }
-    });
-
-    println!("MCP Server sidecar started");
-    Ok(())
 }

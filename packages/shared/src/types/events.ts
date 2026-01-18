@@ -1,29 +1,58 @@
 import type { Workflow, WorkflowStatus } from './workflow.js';
 import type { Task, TaskStatus } from './task.js';
 import type { Todo, TodoStatus, TodoProgress } from './todo.js';
+import type { Project } from './project.js';
+import type { Ticket, TicketStatus, TicketProgress } from './ticket.js';
+import type { Session, SessionStatus } from './session.js';
 
 /**
  * WebSocket event types for real-time updates
  */
 export type EventType =
+  // Project events
+  | 'project:created'
+  | 'project:updated'
+  | 'project:deleted'
+  // Session events
+  | 'session:registered'
+  | 'session:updated'
+  | 'session:disconnected'
+  | 'session:status_changed'
+  // Ticket events
+  | 'ticket:created'
+  | 'ticket:updated'
+  | 'ticket:deleted'
+  | 'ticket:claimed'
+  | 'ticket:released'
+  | 'ticket:completed'
+  | 'ticket:failed'
+  | 'ticket:status_changed'
+  // Legacy workflow events
   | 'workflow:created'
   | 'workflow:updated'
   | 'workflow:deleted'
   | 'workflow:status_changed'
+  // Legacy task events
   | 'task:created'
   | 'task:updated'
   | 'task:deleted'
   | 'task:status_changed'
   | 'task:progress'
+  // Legacy todo events
   | 'todo:created'
   | 'todo:updated'
   | 'todo:deleted'
   | 'todo:batch_updated'
   | 'todo:status_changed'
+  // Connection events
   | 'connection:established'
   | 'connection:error'
   | 'ping'
-  | 'pong';
+  | 'pong'
+  // Conversation events
+  | 'conversation:message'
+  // Debug events
+  | 'debug:log';
 
 export interface BaseEvent {
   type: EventType;
@@ -178,11 +207,151 @@ export type ConnectionEvent =
   | PingEvent
   | PongEvent;
 
+// Project events
+export interface ProjectCreatedEvent extends BaseEvent {
+  type: 'project:created';
+  payload: Project;
+}
+
+export interface ProjectUpdatedEvent extends BaseEvent {
+  type: 'project:updated';
+  payload: Project;
+}
+
+export interface ProjectDeletedEvent extends BaseEvent {
+  type: 'project:deleted';
+  payload: { id: string };
+}
+
+export type ProjectEvent =
+  | ProjectCreatedEvent
+  | ProjectUpdatedEvent
+  | ProjectDeletedEvent;
+
+// Session events
+export interface SessionRegisteredEvent extends BaseEvent {
+  type: 'session:registered';
+  payload: Session;
+}
+
+export interface SessionUpdatedEvent extends BaseEvent {
+  type: 'session:updated';
+  payload: Session;
+}
+
+export interface SessionDisconnectedEvent extends BaseEvent {
+  type: 'session:disconnected';
+  payload: { id: string; projectId: string };
+}
+
+export interface SessionStatusChangedEvent extends BaseEvent {
+  type: 'session:status_changed';
+  payload: {
+    id: string;
+    projectId: string;
+    previousStatus: SessionStatus;
+    newStatus: SessionStatus;
+  };
+}
+
+export type SessionEvent =
+  | SessionRegisteredEvent
+  | SessionUpdatedEvent
+  | SessionDisconnectedEvent
+  | SessionStatusChangedEvent;
+
+// Ticket events
+export interface TicketCreatedEvent extends BaseEvent {
+  type: 'ticket:created';
+  payload: Ticket;
+}
+
+export interface TicketUpdatedEvent extends BaseEvent {
+  type: 'ticket:updated';
+  payload: Ticket;
+}
+
+export interface TicketDeletedEvent extends BaseEvent {
+  type: 'ticket:deleted';
+  payload: { id: string; projectId: string };
+}
+
+export interface TicketClaimedEvent extends BaseEvent {
+  type: 'ticket:claimed';
+  payload: {
+    ticket: Ticket;
+    sessionId: string;
+  };
+}
+
+export interface TicketReleasedEvent extends BaseEvent {
+  type: 'ticket:released';
+  payload: {
+    ticket: Ticket;
+    sessionId: string;
+  };
+}
+
+export interface TicketCompletedEvent extends BaseEvent {
+  type: 'ticket:completed';
+  payload: {
+    ticket: Ticket;
+    sessionId: string;
+  };
+}
+
+export interface TicketFailedEvent extends BaseEvent {
+  type: 'ticket:failed';
+  payload: {
+    ticket: Ticket;
+    sessionId: string;
+    error?: string;
+  };
+}
+
+export interface TicketStatusChangedEvent extends BaseEvent {
+  type: 'ticket:status_changed';
+  payload: {
+    id: string;
+    projectId: string;
+    previousStatus: TicketStatus;
+    newStatus: TicketStatus;
+  };
+}
+
+export type TicketEvent =
+  | TicketCreatedEvent
+  | TicketUpdatedEvent
+  | TicketDeletedEvent
+  | TicketClaimedEvent
+  | TicketReleasedEvent
+  | TicketCompletedEvent
+  | TicketFailedEvent
+  | TicketStatusChangedEvent;
+
+// Conversation events
+export interface ConversationMessageEvent extends BaseEvent {
+  type: 'conversation:message';
+  payload: {
+    sessionId: string;
+    uuid: string;
+    role: 'user' | 'assistant';
+    content: string;
+    cwd?: string;
+  };
+}
+
+export type ConversationEvent = ConversationMessageEvent;
+
 export type AppEvent =
+  | ProjectEvent
+  | SessionEvent
+  | TicketEvent
   | WorkflowEvent
   | TaskEvent
   | TodoEvent
-  | ConnectionEvent;
+  | ConnectionEvent
+  | ConversationEvent;
 
 // Event handler types
 export type EventHandler<T extends AppEvent> = (event: T) => void;

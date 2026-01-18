@@ -1,3 +1,6 @@
+export { registerProjectTools } from './project-tools.js';
+export { registerSessionTools } from './session-tools.js';
+export { registerTicketTools } from './ticket-tools.js';
 export { registerWorkflowTools } from './workflow-tools.js';
 export { registerTaskTools } from './task-tools.js';
 export { registerTodoTools } from './todo-tools.js';

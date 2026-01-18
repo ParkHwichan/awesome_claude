@@ -1,73 +1,60 @@
-use crate::McpServerState;
+use crate::database::{self, ProjectSummary, Session, Ticket};
 use serde::Serialize;
-use tauri::State;
-use tauri_plugin_shell::ShellExt;
 
 #[derive(Serialize)]
-pub struct McpServerStatus {
-    pub running: bool,
-    pub ws_port: u16,
+#[serde(rename_all = "camelCase")]
+pub struct InitialData {
+    pub projects: Vec<ProjectSummary>,
+    pub sessions: Vec<Session>,
+    pub tickets: Vec<Ticket>,
 }
 
 #[tauri::command]
-pub async fn get_mcp_server_status(state: State<'_, McpServerState>) -> Result<McpServerStatus, String> {
-    let child_guard = state.child.lock().await;
-    Ok(McpServerStatus {
-        running: child_guard.is_some(),
-        ws_port: 3001,
+pub async fn get_initial_data() -> Result<InitialData, String> {
+    let projects = database::list_projects().map_err(|e| e.to_string())?;
+    let sessions = database::list_sessions().map_err(|e| e.to_string())?;
+    let tickets = database::list_tickets().map_err(|e| e.to_string())?;
+
+    Ok(InitialData {
+        projects,
+        sessions,
+        tickets,
     })
 }
 
 #[tauri::command]
-pub async fn restart_mcp_server(
-    app_handle: tauri::AppHandle,
-    state: State<'_, McpServerState>,
-) -> Result<(), String> {
-    // Kill existing process
-    {
-        let mut child_guard = state.child.lock().await;
-        if let Some(child) = child_guard.take() {
-            let _ = child.kill();
-        }
-    }
+pub async fn get_projects() -> Result<Vec<ProjectSummary>, String> {
+    database::list_projects().map_err(|e| e.to_string())
+}
 
-    // Start new process
-    let shell = app_handle.shell();
+#[tauri::command]
+pub async fn get_sessions() -> Result<Vec<Session>, String> {
+    database::list_sessions().map_err(|e| e.to_string())
+}
 
-    let sidecar = shell
-        .sidecar("binaries/awesome-claude-mcp")
-        .map_err(|e| format!("Failed to create sidecar command: {}", e))?;
+#[tauri::command]
+pub async fn get_tickets() -> Result<Vec<Ticket>, String> {
+    database::list_tickets().map_err(|e| e.to_string())
+}
 
-    let (mut rx, child) = sidecar
-        .spawn()
-        .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+#[tauri::command]
+pub async fn cleanup_dead_sessions() -> Result<usize, String> {
+    database::cleanup_dead_sessions().map_err(|e| e.to_string())
+}
 
-    // Store the new child process
-    let mut child_guard = state.child.lock().await;
-    *child_guard = Some(child);
+#[tauri::command]
+pub async fn update_ticket(
+    id: String,
+    title: String,
+    description: Option<String>,
+    status: String,
+    priority: String,
+) -> Result<Ticket, String> {
+    database::update_ticket(&id, &title, description.as_deref(), &status, &priority)
+        .map_err(|e| e.to_string())
+}
 
-    // Log sidecar output
-    tauri::async_runtime::spawn(async move {
-        use tauri_plugin_shell::process::CommandEvent;
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(line) => {
-                    println!("[MCP Server] {}", String::from_utf8_lossy(&line));
-                }
-                CommandEvent::Stderr(line) => {
-                    eprintln!("[MCP Server] {}", String::from_utf8_lossy(&line));
-                }
-                CommandEvent::Error(err) => {
-                    eprintln!("[MCP Server Error] {}", err);
-                }
-                CommandEvent::Terminated(payload) => {
-                    println!("[MCP Server] Terminated with code: {:?}", payload.code);
-                    break;
-                }
-                _ => {}
-            }
-        }
-    });
-
-    Ok(())
+#[tauri::command]
+pub async fn delete_ticket(id: String) -> Result<(), String> {
+    database::delete_ticket(&id).map_err(|e| e.to_string())
 }

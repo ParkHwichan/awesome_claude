@@ -36,3 +36,4 @@ Thumbs.db
 
 # Test
 coverage/
+packages/tauri-app/src-tauri/binaries/*.exe

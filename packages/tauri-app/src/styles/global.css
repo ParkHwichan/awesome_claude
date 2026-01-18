@@ -1,57 +1,131 @@
-:root {
-  --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #21262d;
-  --text-primary: #c9d1d9;
-  --text-secondary: #8b949e;
-  --text-muted: #6e7681;
-  --border-color: #30363d;
-  --accent-blue: #58a6ff;
-  --accent-green: #3fb950;
-  --accent-yellow: #d29922;
-  --accent-red: #f85149;
-  --accent-purple: #a371f7;
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Dark theme as default - GitHub-inspired dark mode */
+@theme {
+  /* Base colors */
+  --color-background: #0d1117;
+  --color-foreground: #c9d1d9;
+
+  --color-card: #161b22;
+  --color-card-foreground: #c9d1d9;
+
+  --color-popover: #161b22;
+  --color-popover-foreground: #c9d1d9;
+
+  --color-primary: #58a6ff;
+  --color-primary-foreground: #0d1117;
+
+  --color-secondary: #21262d;
+  --color-secondary-foreground: #c9d1d9;
+
+  --color-muted: #21262d;
+  --color-muted-foreground: #8b949e;
+
+  --color-accent: #21262d;
+  --color-accent-foreground: #c9d1d9;
+
+  --color-destructive: #f85149;
+  --color-destructive-foreground: #ffffff;
+
+  --color-border: #30363d;
+  --color-input: #30363d;
+  --color-ring: #58a6ff;
+
+  /* Status colors */
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-error: #f85149;
+  --color-info: #58a6ff;
+
+  /* Priority colors */
+  --color-priority-urgent: #dc2626;
+  --color-priority-high: #ea580c;
+  --color-priority-medium: #ca8a04;
+  --color-priority-low: #16a34a;
+
+  /* Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+
+  /* Sidebar */
+  --color-sidebar: #161b22;
+  --color-sidebar-foreground: #c9d1d9;
+  --color-sidebar-primary: #58a6ff;
+  --color-sidebar-primary-foreground: #0d1117;
+  --color-sidebar-accent: #21262d;
+  --color-sidebar-accent-foreground: #c9d1d9;
+  --color-sidebar-border: #30363d;
+  --color-sidebar-ring: #58a6ff;
+
+  /* Chart colors */
+  --color-chart-1: #58a6ff;
+  --color-chart-2: #3fb950;
+  --color-chart-3: #d29922;
+  --color-chart-4: #f85149;
+  --color-chart-5: #a371f7;
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/* Base layer */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  #root {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
 }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-  line-height: 1.5;
+/* Custom scrollbar */
+@layer base {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--color-card);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-muted-foreground);
+  }
 }
 
-#root {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
+/* Linear-style utility classes */
+@layer utilities {
+  .section-label {
+    @apply text-[11px] font-semibold uppercase tracking-wider text-muted-foreground;
+  }
 
-button {
-  font-family: inherit;
-  cursor: pointer;
-}
+  .card-subtle {
+    @apply border-border/50 bg-card/50;
+  }
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
+  .status-dot {
+    @apply w-2 h-2 rounded-full shrink-0;
+  }
 
-::-webkit-scrollbar-track {
-  background: var(--bg-secondary);
-}
+  .status-dot-lg {
+    @apply w-2.5 h-2.5 rounded-full shrink-0;
+  }
 
-::-webkit-scrollbar-thumb {
-  background: var(--border-color);
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  .list-item-interactive {
+    @apply px-4 py-2.5 rounded-md transition-colors hover:bg-sidebar-accent;
+  }
 }

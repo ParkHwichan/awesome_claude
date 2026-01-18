@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.awesome-claude.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "vite",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
@@ -18,7 +18,8 @@
         "minWidth": 800,
         "minHeight": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "decorations": false
       }
     ],
     "security": {
@@ -42,14 +43,7 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "sidecar": true,
-      "scope": [
-        {
-          "name": "binaries/awesome-claude-mcp",
-          "sidecar": true
-        }
-      ]
+      "open": true
     }
   }
 }

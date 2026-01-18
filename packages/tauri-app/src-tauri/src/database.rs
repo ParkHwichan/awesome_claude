@@ -1,0 +1,308 @@
+use rusqlite::{Connection, Result};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+fn get_db_path() -> PathBuf {
+    let app_data = dirs::data_dir()
+        .or_else(|| dirs::config_dir())
+        .unwrap_or_else(|| PathBuf::from("."));
+    app_data.join("awesome-claude").join("data").join("awesome-claude.db")
+}
+
+pub fn get_connection() -> Result<Connection> {
+    let db_path = get_db_path();
+    Connection::open(db_path)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub working_directory: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub metadata: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    pub working_directory: String,
+    pub ticket_count: i32,
+    pub active_session_count: i32,
+    pub pending_tickets: i32,
+    pub in_progress_tickets: i32,
+    pub completed_tickets: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
+    pub id: String,
+    pub project_id: String,
+    pub ppid: i32,
+    pub name: Option<String>,
+    pub model: Option<String>,
+    pub status: String,
+    pub connected_at: String,
+    pub last_active_at: String,
+    pub disconnected_at: Option<String>,
+    pub current_ticket_id: Option<String>,
+    pub tickets_completed: i32,
+    pub tickets_failed: i32,
+    pub metadata: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ticket {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub priority: String,
+    pub claimed_by: Option<String>,
+    pub claimed_at: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+    pub result: Option<String>,
+    pub metadata: Option<String>,
+}
+
+pub fn list_projects() -> Result<Vec<ProjectSummary>> {
+    let conn = get_connection()?;
+    let mut stmt = conn.prepare(
+        "SELECT
+            p.id,
+            p.name,
+            p.working_directory,
+            (SELECT COUNT(*) FROM tickets WHERE project_id = p.id) as ticket_count,
+            (SELECT COUNT(*) FROM sessions WHERE project_id = p.id AND status != 'disconnected') as active_session_count,
+            (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status = 'pending') as pending_tickets,
+            (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status IN ('claimed', 'in_progress')) as in_progress_tickets,
+            (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status = 'completed') as completed_tickets
+        FROM projects p
+        ORDER BY p.updated_at DESC"
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(ProjectSummary {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            working_directory: row.get(2)?,
+            ticket_count: row.get(3)?,
+            active_session_count: row.get(4)?,
+            pending_tickets: row.get(5)?,
+            in_progress_tickets: row.get(6)?,
+            completed_tickets: row.get(7)?,
+        })
+    })?;
+
+    rows.collect()
+}
+
+pub fn list_sessions() -> Result<Vec<Session>> {
+    let conn = get_connection()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, ppid, name, model, status, connected_at, last_active_at,
+                disconnected_at, current_ticket_id, tickets_completed, tickets_failed, metadata
+         FROM sessions
+         WHERE status != 'disconnected'
+         ORDER BY last_active_at DESC"
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(Session {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            ppid: row.get(2)?,
+            name: row.get(3)?,
+            model: row.get(4)?,
+            status: row.get(5)?,
+            connected_at: row.get(6)?,
+            last_active_at: row.get(7)?,
+            disconnected_at: row.get(8)?,
+            current_ticket_id: row.get(9)?,
+            tickets_completed: row.get(10)?,
+            tickets_failed: row.get(11)?,
+            metadata: row.get(12)?,
+        })
+    })?;
+
+    rows.collect()
+}
+
+pub fn cleanup_dead_sessions() -> Result<usize> {
+    let conn = get_connection()?;
+
+    // Get all active sessions
+    let mut stmt = conn.prepare(
+        "SELECT id, ppid FROM sessions WHERE status != 'disconnected'"
+    )?;
+
+    let sessions: Vec<(String, i32)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?.filter_map(|r| r.ok()).collect();
+
+    let mut cleaned = 0;
+    for (id, ppid) in sessions {
+        // Clean up if ppid is 0/invalid OR if process is dead
+        if ppid <= 0 || !is_process_alive(ppid as u32) {
+            conn.execute(
+                "UPDATE sessions SET status = 'disconnected', disconnected_at = datetime('now') WHERE id = ?",
+                [&id]
+            )?;
+            cleaned += 1;
+        }
+    }
+
+    Ok(cleaned)
+}
+
+#[cfg(target_os = "windows")]
+fn is_process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{OpenProcess, GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+
+        let mut exit_code: u32 = 0;
+        let result = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+
+        result != 0 && exit_code == (STILL_ACTIVE as u32)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_process_alive(pid: u32) -> bool {
+    use std::process::Command;
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+pub fn list_tickets() -> Result<Vec<Ticket>> {
+    let conn = get_connection()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, title, description, status, priority, claimed_by, claimed_at,
+                created_by, created_at, updated_at, completed_at, result, metadata
+         FROM tickets
+         ORDER BY created_at DESC"
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(Ticket {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            title: row.get(2)?,
+            description: row.get(3)?,
+            status: row.get(4)?,
+            priority: row.get(5)?,
+            claimed_by: row.get(6)?,
+            claimed_at: row.get(7)?,
+            created_by: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+            completed_at: row.get(11)?,
+            result: row.get(12)?,
+            metadata: row.get(13)?,
+        })
+    })?;
+
+    rows.collect()
+}
+
+pub fn update_ticket(
+    id: &str,
+    title: &str,
+    description: Option<&str>,
+    status: &str,
+    priority: &str,
+) -> Result<Ticket> {
+    let conn = get_connection()?;
+
+    // If status is changing to pending, clear claimed_by
+    let clear_claimed = status == "pending";
+
+    if clear_claimed {
+        conn.execute(
+            "UPDATE tickets SET title = ?, description = ?, status = ?, priority = ?,
+             claimed_by = NULL, claimed_at = NULL, updated_at = datetime('now') WHERE id = ?",
+            rusqlite::params![title, description, status, priority, id],
+        )?;
+    } else {
+        conn.execute(
+            "UPDATE tickets SET title = ?, description = ?, status = ?, priority = ?,
+             updated_at = datetime('now') WHERE id = ?",
+            rusqlite::params![title, description, status, priority, id],
+        )?;
+    }
+
+    // Return updated ticket
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, title, description, status, priority, claimed_by, claimed_at,
+                created_by, created_at, updated_at, completed_at, result, metadata
+         FROM tickets WHERE id = ?"
+    )?;
+
+    stmt.query_row([id], |row| {
+        Ok(Ticket {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            title: row.get(2)?,
+            description: row.get(3)?,
+            status: row.get(4)?,
+            priority: row.get(5)?,
+            claimed_by: row.get(6)?,
+            claimed_at: row.get(7)?,
+            created_by: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+            completed_at: row.get(11)?,
+            result: row.get(12)?,
+            metadata: row.get(13)?,
+        })
+    })
+}
+
+pub fn delete_ticket(id: &str) -> Result<()> {
+    let conn = get_connection()?;
+    conn.execute("DELETE FROM tickets WHERE id = ?", [id])?;
+    Ok(())
+}
+
+/// Mark a session as disconnected by ID. Returns (project_id,) on success.
+pub fn mark_session_disconnected(session_id: &str) -> Result<(String,)> {
+    let conn = get_connection()?;
+
+    // Get project_id first
+    let project_id: String = conn.query_row(
+        "SELECT project_id FROM sessions WHERE id = ?",
+        [session_id],
+        |row| row.get(0),
+    )?;
+
+    // Update session status
+    conn.execute(
+        "UPDATE sessions SET status = 'disconnected', disconnected_at = datetime('now') WHERE id = ?",
+        [session_id],
+    )?;
+
+    println!("[DB] Marked session {} as disconnected (project: {})", session_id, project_id);
+
+    Ok((project_id,))
+}

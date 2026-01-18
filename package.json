@@ -4,7 +4,7 @@
   "private": true,
   "description": "Claude Code workflow visualization and management",
   "scripts": {
-    "dev": "pnpm -r --parallel dev",
+    "dev": "pnpm --filter @awesome-claude/shared --filter @awesome-claude/tauri-app --parallel dev",
     "dev:mcp": "pnpm --filter @awesome-claude/mcp-server dev",
     "dev:app": "pnpm --filter @awesome-claude/tauri-app dev",
     "dev:tauri": "pnpm --filter @awesome-claude/tauri-app tauri:dev",

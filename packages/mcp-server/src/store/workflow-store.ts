@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
-import { runQuery, getOne, getAll, saveDatabase } from './database.js';
+import { eq, sql, isNull, max } from 'drizzle-orm';
+import { getDb, workflows, tasks, todos } from '../db/index.js';
 import type {
   Workflow,
   WorkflowCreate,
@@ -16,60 +17,98 @@ import type {
   TodoProgress,
 } from '@awesome-claude/shared';
 
+// Helper to convert DB row to Workflow type
+function toWorkflow(row: typeof workflows.$inferSelect): Workflow {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    status: row.status as Workflow['status'],
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    startedAt: row.startedAt ?? undefined,
+    completedAt: row.completedAt ?? undefined,
+    metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+  };
+}
+
+// Helper to convert DB row to Task type
+function toTask(row: typeof tasks.$inferSelect): Task {
+  return {
+    id: row.id,
+    workflowId: row.workflowId,
+    parentId: row.parentId ?? undefined,
+    name: row.name,
+    description: row.description ?? undefined,
+    status: row.status as Task['status'],
+    type: row.type as Task['type'],
+    order: row.taskOrder,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    startedAt: row.startedAt ?? undefined,
+    completedAt: row.completedAt ?? undefined,
+    result: row.result ? JSON.parse(row.result) : undefined,
+    metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+  };
+}
+
+// Helper to convert DB row to Todo type
+function toTodo(row: typeof todos.$inferSelect): Todo {
+  return {
+    id: row.id,
+    workflowId: row.workflowId,
+    content: row.content,
+    activeForm: row.activeForm,
+    status: row.status as Todo['status'],
+    order: row.todoOrder,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    completedAt: row.completedAt ?? undefined,
+    linkedTaskId: row.linkedTaskId ?? undefined,
+  };
+}
+
 // Workflow operations
 export function createWorkflow(data: WorkflowCreate): Workflow {
+  const db = getDb();
   const now = new Date().toISOString();
-  const workflow: Workflow = {
-    id: uuidv4(),
+  const id = uuidv4();
+
+  const newWorkflow = {
+    id,
     name: data.name,
-    description: data.description,
+    description: data.description ?? null,
     status: 'pending',
     createdAt: now,
     updatedAt: now,
-    metadata: data.metadata,
+    metadata: data.metadata ? JSON.stringify(data.metadata) : null,
   };
 
-  runQuery(
-    `INSERT INTO workflows (id, name, description, status, created_at, updated_at, metadata)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      workflow.id,
-      workflow.name,
-      workflow.description || null,
-      workflow.status,
-      workflow.createdAt,
-      workflow.updatedAt,
-      workflow.metadata ? JSON.stringify(workflow.metadata) : null,
-    ]
-  );
+  db.insert(workflows).values(newWorkflow).run();
 
-  return workflow;
+  return toWorkflow(newWorkflow as typeof workflows.$inferSelect);
 }
 
 export function getWorkflow(id: string): Workflow | null {
-  const row = getOne('SELECT * FROM workflows WHERE id = ?', [id]);
-  if (!row) return null;
-  return rowToWorkflow(row);
+  const db = getDb();
+  const row = db.select().from(workflows).where(eq(workflows.id, id)).get();
+  return row ? toWorkflow(row) : null;
 }
 
 export function listWorkflows(status?: string): WorkflowSummary[] {
-  let query = `
+  const db = getDb();
+
+  // Raw SQL for aggregated counts
+  const rows = db.all(sql`
     SELECT
       w.*,
       (SELECT COUNT(*) FROM tasks WHERE workflow_id = w.id) as task_count,
       (SELECT COUNT(*) FROM tasks WHERE workflow_id = w.id AND status = 'completed') as completed_task_count
     FROM workflows w
-  `;
+    ${status ? sql`WHERE w.status = ${status}` : sql``}
+    ORDER BY w.updated_at DESC
+  `) as any[];
 
-  const params: any[] = [];
-  if (status) {
-    query += ' WHERE w.status = ?';
-    params.push(status);
-  }
-
-  query += ' ORDER BY w.updated_at DESC';
-
-  const rows = getAll(query, params);
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
@@ -85,119 +124,104 @@ export function updateWorkflow(id: string, data: WorkflowUpdate): Workflow | nul
   const existing = getWorkflow(id);
   if (!existing) return null;
 
+  const db = getDb();
   const now = new Date().toISOString();
-  const updated: Workflow = {
-    ...existing,
-    name: data.name ?? existing.name,
-    description: data.description ?? existing.description,
-    status: data.status ?? existing.status,
-    metadata: data.metadata ?? existing.metadata,
+
+  const updateData: Partial<typeof workflows.$inferInsert> = {
     updatedAt: now,
   };
 
+  if (data.name !== undefined) updateData.name = data.name;
+  if (data.description !== undefined) updateData.description = data.description;
+  if (data.status !== undefined) updateData.status = data.status;
+  if (data.metadata !== undefined) updateData.metadata = data.metadata ? JSON.stringify(data.metadata) : null;
+
   if (data.status === 'running' && !existing.startedAt) {
-    updated.startedAt = now;
+    updateData.startedAt = now;
   }
   if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
-    updated.completedAt = now;
+    updateData.completedAt = now;
   }
 
-  runQuery(
-    `UPDATE workflows
-     SET name = ?, description = ?, status = ?, updated_at = ?, started_at = ?, completed_at = ?, metadata = ?
-     WHERE id = ?`,
-    [
-      updated.name,
-      updated.description || null,
-      updated.status,
-      updated.updatedAt,
-      updated.startedAt || null,
-      updated.completedAt || null,
-      updated.metadata ? JSON.stringify(updated.metadata) : null,
-      id,
-    ]
-  );
+  db.update(workflows).set(updateData).where(eq(workflows.id, id)).run();
 
-  return updated;
+  return getWorkflow(id);
 }
 
 export function deleteWorkflow(id: string): boolean {
   const existing = getWorkflow(id);
   if (!existing) return false;
 
-  runQuery('DELETE FROM todos WHERE workflow_id = ?', [id]);
-  runQuery('DELETE FROM tasks WHERE workflow_id = ?', [id]);
-  runQuery('DELETE FROM workflows WHERE id = ?', [id]);
+  const db = getDb();
+
+  db.delete(todos).where(eq(todos.workflowId, id)).run();
+  db.delete(tasks).where(eq(tasks.workflowId, id)).run();
+  db.delete(workflows).where(eq(workflows.id, id)).run();
+
   return true;
 }
 
 // Task operations
 export function createTask(data: TaskCreate): Task {
+  const db = getDb();
   const now = new Date().toISOString();
+  const id = uuidv4();
 
-  const maxOrderRow = getOne(
-    'SELECT MAX(task_order) as max_order FROM tasks WHERE workflow_id = ? AND parent_id IS ?',
-    [data.workflowId, data.parentId || null]
-  );
+  // Get max order
+  const maxOrderResult = db.select({ maxOrder: max(tasks.taskOrder) })
+    .from(tasks)
+    .where(eq(tasks.workflowId, data.workflowId))
+    .get();
 
-  const order = data.order ?? ((maxOrderRow?.max_order ?? -1) + 1);
+  const order = data.order ?? ((maxOrderResult?.maxOrder ?? -1) + 1);
 
-  const task: Task = {
-    id: uuidv4(),
+  const newTask = {
+    id,
     workflowId: data.workflowId,
-    parentId: data.parentId,
+    parentId: data.parentId ?? null,
     name: data.name,
-    description: data.description,
+    description: data.description ?? null,
     status: 'pending',
     type: data.type,
-    order,
+    taskOrder: order,
     createdAt: now,
     updatedAt: now,
-    metadata: data.metadata,
+    metadata: data.metadata ? JSON.stringify(data.metadata) : null,
   };
 
-  runQuery(
-    `INSERT INTO tasks (id, workflow_id, parent_id, name, description, status, type, task_order, created_at, updated_at, metadata)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      task.id,
-      task.workflowId,
-      task.parentId || null,
-      task.name,
-      task.description || null,
-      task.status,
-      task.type,
-      task.order,
-      task.createdAt,
-      task.updatedAt,
-      task.metadata ? JSON.stringify(task.metadata) : null,
-    ]
-  );
+  db.insert(tasks).values(newTask).run();
 
-  return task;
+  return toTask(newTask as typeof tasks.$inferSelect);
 }
 
 export function getTask(id: string): Task | null {
-  const row = getOne('SELECT * FROM tasks WHERE id = ?', [id]);
-  if (!row) return null;
-  return rowToTask(row);
+  const db = getDb();
+  const row = db.select().from(tasks).where(eq(tasks.id, id)).get();
+  return row ? toTask(row) : null;
 }
 
 export function listTasks(workflowId: string): Task[] {
-  const rows = getAll('SELECT * FROM tasks WHERE workflow_id = ? ORDER BY task_order', [workflowId]);
-  return rows.map(rowToTask);
+  const db = getDb();
+  const rows = db.select().from(tasks)
+    .where(eq(tasks.workflowId, workflowId))
+    .all();
+
+  // Sort by taskOrder
+  rows.sort((a, b) => a.taskOrder - b.taskOrder);
+
+  return rows.map(toTask);
 }
 
 export function getTaskTree(workflowId: string): TaskTree[] {
-  const tasks = listTasks(workflowId);
+  const taskList = listTasks(workflowId);
   const taskMap = new Map<string, TaskTree>();
   const roots: TaskTree[] = [];
 
-  for (const task of tasks) {
+  for (const task of taskList) {
     taskMap.set(task.id, { ...task, children: [] });
   }
 
-  for (const task of tasks) {
+  for (const task of taskList) {
     const treeNode = taskMap.get(task.id)!;
     if (task.parentId) {
       const parent = taskMap.get(task.parentId);
@@ -216,193 +240,160 @@ export function updateTask(id: string, data: TaskUpdate): Task | null {
   const existing = getTask(id);
   if (!existing) return null;
 
+  const db = getDb();
   const now = new Date().toISOString();
-  const updated: Task = {
-    ...existing,
-    name: data.name ?? existing.name,
-    description: data.description ?? existing.description,
-    status: data.status ?? existing.status,
-    result: data.result ?? existing.result,
-    metadata: data.metadata ?? existing.metadata,
+
+  const updateData: Partial<typeof tasks.$inferInsert> = {
     updatedAt: now,
   };
 
+  if (data.name !== undefined) updateData.name = data.name;
+  if (data.description !== undefined) updateData.description = data.description;
+  if (data.status !== undefined) updateData.status = data.status;
+  if (data.result !== undefined) updateData.result = data.result ? JSON.stringify(data.result) : null;
+  if (data.metadata !== undefined) updateData.metadata = data.metadata ? JSON.stringify(data.metadata) : null;
+
   if (data.status === 'in_progress' && !existing.startedAt) {
-    updated.startedAt = now;
+    updateData.startedAt = now;
   }
   if (data.status === 'completed' || data.status === 'failed' || data.status === 'skipped') {
-    updated.completedAt = now;
+    updateData.completedAt = now;
   }
 
-  runQuery(
-    `UPDATE tasks
-     SET name = ?, description = ?, status = ?, updated_at = ?, started_at = ?, completed_at = ?, result = ?, metadata = ?
-     WHERE id = ?`,
-    [
-      updated.name,
-      updated.description || null,
-      updated.status,
-      updated.updatedAt,
-      updated.startedAt || null,
-      updated.completedAt || null,
-      updated.result ? JSON.stringify(updated.result) : null,
-      updated.metadata ? JSON.stringify(updated.metadata) : null,
-      id,
-    ]
-  );
+  db.update(tasks).set(updateData).where(eq(tasks.id, id)).run();
 
-  return updated;
+  return getTask(id);
 }
 
 export function deleteTask(id: string): boolean {
   const existing = getTask(id);
   if (!existing) return false;
-  runQuery('DELETE FROM tasks WHERE id = ?', [id]);
+
+  const db = getDb();
+  db.delete(tasks).where(eq(tasks.id, id)).run();
+
   return true;
 }
 
 // Todo operations
 export function createTodo(data: TodoCreate): Todo {
+  const db = getDb();
   const now = new Date().toISOString();
+  const id = uuidv4();
 
-  const maxOrderRow = getOne(
-    'SELECT MAX(todo_order) as max_order FROM todos WHERE workflow_id = ?',
-    [data.workflowId]
-  );
+  // Get max order
+  const maxOrderResult = db.select({ maxOrder: max(todos.todoOrder) })
+    .from(todos)
+    .where(eq(todos.workflowId, data.workflowId))
+    .get();
 
-  const order = data.order ?? ((maxOrderRow?.max_order ?? -1) + 1);
+  const order = data.order ?? ((maxOrderResult?.maxOrder ?? -1) + 1);
 
-  const todo: Todo = {
-    id: uuidv4(),
+  const newTodo = {
+    id,
     workflowId: data.workflowId,
     content: data.content,
     activeForm: data.activeForm,
     status: 'pending',
-    order,
+    todoOrder: order,
     createdAt: now,
     updatedAt: now,
   };
 
-  runQuery(
-    `INSERT INTO todos (id, workflow_id, content, active_form, status, todo_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      todo.id,
-      todo.workflowId,
-      todo.content,
-      todo.activeForm,
-      todo.status,
-      todo.order,
-      todo.createdAt,
-      todo.updatedAt,
-    ]
-  );
+  db.insert(todos).values(newTodo).run();
 
-  return todo;
+  return toTodo(newTodo as typeof todos.$inferSelect);
 }
 
 export function getTodo(id: string): Todo | null {
-  const row = getOne('SELECT * FROM todos WHERE id = ?', [id]);
-  if (!row) return null;
-  return rowToTodo(row);
+  const db = getDb();
+  const row = db.select().from(todos).where(eq(todos.id, id)).get();
+  return row ? toTodo(row) : null;
 }
 
 export function listTodos(workflowId: string): Todo[] {
-  const rows = getAll('SELECT * FROM todos WHERE workflow_id = ? ORDER BY todo_order', [workflowId]);
-  return rows.map(rowToTodo);
+  const db = getDb();
+  const rows = db.select().from(todos)
+    .where(eq(todos.workflowId, workflowId))
+    .all();
+
+  // Sort by todoOrder
+  rows.sort((a, b) => a.todoOrder - b.todoOrder);
+
+  return rows.map(toTodo);
 }
 
 export function updateTodo(id: string, data: TodoUpdate): Todo | null {
   const existing = getTodo(id);
   if (!existing) return null;
 
+  const db = getDb();
   const now = new Date().toISOString();
-  const updated: Todo = {
-    ...existing,
-    content: data.content ?? existing.content,
-    activeForm: data.activeForm ?? existing.activeForm,
-    status: data.status ?? existing.status,
-    linkedTaskId: data.linkedTaskId ?? existing.linkedTaskId,
+
+  const updateData: Partial<typeof todos.$inferInsert> = {
     updatedAt: now,
   };
 
+  if (data.content !== undefined) updateData.content = data.content;
+  if (data.activeForm !== undefined) updateData.activeForm = data.activeForm;
+  if (data.status !== undefined) updateData.status = data.status;
+  if (data.linkedTaskId !== undefined) updateData.linkedTaskId = data.linkedTaskId;
+
   if (data.status === 'completed' && !existing.completedAt) {
-    updated.completedAt = now;
+    updateData.completedAt = now;
   }
 
-  runQuery(
-    `UPDATE todos
-     SET content = ?, active_form = ?, status = ?, updated_at = ?, completed_at = ?, linked_task_id = ?
-     WHERE id = ?`,
-    [
-      updated.content,
-      updated.activeForm,
-      updated.status,
-      updated.updatedAt,
-      updated.completedAt || null,
-      updated.linkedTaskId || null,
-      id,
-    ]
-  );
+  db.update(todos).set(updateData).where(eq(todos.id, id)).run();
 
-  return updated;
+  return getTodo(id);
 }
 
 export function batchUpdateTodos(data: TodoBatch): Todo[] {
+  const db = getDb();
   const now = new Date().toISOString();
 
   // Delete existing todos for the workflow
-  runQuery('DELETE FROM todos WHERE workflow_id = ?', [data.workflowId]);
+  db.delete(todos).where(eq(todos.workflowId, data.workflowId)).run();
 
   // Insert new todos
-  const todos: Todo[] = data.todos.map((item, index) => {
-    const todo: Todo = {
-      id: uuidv4(),
+  const result: Todo[] = data.todos.map((item, index) => {
+    const id = uuidv4();
+    const newTodo = {
+      id,
       workflowId: data.workflowId,
       content: item.content,
       activeForm: item.activeForm,
       status: item.status,
-      order: index,
+      todoOrder: index,
       createdAt: now,
       updatedAt: now,
-      completedAt: item.status === 'completed' ? now : undefined,
+      completedAt: item.status === 'completed' ? now : null,
     };
 
-    runQuery(
-      `INSERT INTO todos (id, workflow_id, content, active_form, status, todo_order, created_at, updated_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        todo.id,
-        todo.workflowId,
-        todo.content,
-        todo.activeForm,
-        todo.status,
-        todo.order,
-        todo.createdAt,
-        todo.updatedAt,
-        todo.completedAt || null,
-      ]
-    );
+    db.insert(todos).values(newTodo).run();
 
-    return todo;
+    return toTodo(newTodo as typeof todos.$inferSelect);
   });
 
-  saveDatabase();
-  return todos;
+  return result;
 }
 
 export function deleteTodo(id: string): boolean {
   const existing = getTodo(id);
   if (!existing) return false;
-  runQuery('DELETE FROM todos WHERE id = ?', [id]);
+
+  const db = getDb();
+  db.delete(todos).where(eq(todos.id, id)).run();
+
   return true;
 }
 
 export function getTodoProgress(workflowId: string): TodoProgress {
-  const rows = getAll(
-    'SELECT status, COUNT(*) as count FROM todos WHERE workflow_id = ? GROUP BY status',
-    [workflowId]
-  );
+  const db = getDb();
+
+  const rows = db.all(sql`
+    SELECT status, COUNT(*) as count FROM todos WHERE workflow_id = ${workflowId} GROUP BY status
+  `) as { status: string; count: number }[];
 
   const counts = { pending: 0, in_progress: 0, completed: 0 };
   for (const row of rows) {
@@ -416,54 +407,5 @@ export function getTodoProgress(workflowId: string): TodoProgress {
     inProgress: counts.in_progress,
     completed: counts.completed,
     percentComplete: total > 0 ? Math.round((counts.completed / total) * 100) : 0,
-  };
-}
-
-// Helper functions
-function rowToWorkflow(row: any): Workflow {
-  return {
-    id: row.id,
-    name: row.name,
-    description: row.description,
-    status: row.status,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-    metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-  };
-}
-
-function rowToTask(row: any): Task {
-  return {
-    id: row.id,
-    workflowId: row.workflow_id,
-    parentId: row.parent_id,
-    name: row.name,
-    description: row.description,
-    status: row.status,
-    type: row.type,
-    order: row.task_order,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-    result: row.result ? JSON.parse(row.result) : undefined,
-    metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-  };
-}
-
-function rowToTodo(row: any): Todo {
-  return {
-    id: row.id,
-    workflowId: row.workflow_id,
-    content: row.content,
-    activeForm: row.active_form,
-    status: row.status,
-    order: row.todo_order,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    completedAt: row.completed_at,
-    linkedTaskId: row.linked_task_id,
   };
 }

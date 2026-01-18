@@ -9,25 +9,28 @@
   },
   "scripts": {
     "build": "tsc",
-    "build:exe": "bun build src/server.ts --compile --outfile=dist/awesome-claude-mcp.exe --target=bun-windows-x64",
-    "dev": "tsx watch src/server.ts",
+    "build:exe": "bun build src/server.ts --compile --outfile=../tauri-app/src-tauri/binaries/awesome-claude-mcp-x86_64-pc-windows-msvc.exe --target=bun-windows-x64",
+    "dev": "tsx src/server.ts",
     "start": "node dist/server.js",
     "clean": "rimraf dist"
   },
   "dependencies": {
+    "@awesome-claude/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "sql.js": "^1.11.0",
-    "ws": "^8.18.0",
+    "better-sqlite3": "^11.7.0",
+    "chokidar": "^5.0.0",
+    "drizzle-orm": "^0.45.1",
     "uuid": "^10.0.0",
-    "zod": "^3.24.0",
-    "@awesome-claude/shared": "workspace:*"
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
-    "@types/sql.js": "^1.4.9",
-    "@types/ws": "^8.5.13",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.13",
+    "drizzle-kit": "^0.31.8",
+    "rimraf": "^5.0.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "rimraf": "^5.0.0"
+    "typescript": "^5.7.2"
   }
 }
