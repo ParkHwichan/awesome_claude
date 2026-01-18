@@ -1,7 +1,7 @@
 /**
  * Ticket - Work unit that can be claimed by a session
  */
-export type TicketStatus = 'pending' | 'claimed' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+export type TicketStatus = 'pending' | 'claimed' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'archived';
 export type TicketPriority = 'low' | 'medium' | 'high' | 'urgent';
 export type TicketType = 'task' | 'bug' | 'feature' | 'epic' | 'story';
 

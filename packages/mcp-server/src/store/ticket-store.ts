@@ -93,7 +93,7 @@ export function getTicket(id: string): Ticket | null {
 // List tickets
 export function listTickets(
   projectId: string,
-  options?: { status?: TicketStatus; priority?: string; claimedBy?: string }
+  options?: { status?: TicketStatus; priority?: string; claimedBy?: string; includeArchived?: boolean }
 ): Ticket[] {
   const db = getDb();
 
@@ -104,6 +104,12 @@ export function listTickets(
   const rows = query.all();
 
   let filtered = rows;
+
+  // Exclude archived by default
+  if (!options?.includeArchived) {
+    filtered = filtered.filter(r => r.status !== 'archived');
+  }
+
   if (options?.status) {
     filtered = filtered.filter(r => r.status === options.status);
   }
@@ -248,6 +254,9 @@ export function completeTicket(ticketId: string, sessionId: string, result: Tick
     .where(eq(tickets.id, ticketId))
     .run();
 
+  // Archive old completed tickets
+  archiveOldCompletedTickets(existing.projectId);
+
   return getTicket(ticketId);
 }
 
@@ -312,6 +321,9 @@ export function forceCompleteTicket(ticketId: string, result: TicketResult): Tic
     .where(eq(tickets.id, ticketId))
     .run();
 
+  // Archive old completed tickets
+  archiveOldCompletedTickets(existing.projectId);
+
   return getTicket(ticketId);
 }
 
@@ -332,13 +344,17 @@ export function getTicketProgress(projectId: string): TicketProgress {
     failed: 0,
     cancelled: 0,
     blocked: 0,
+    archived: 0,
   };
 
   for (const row of rows) {
     counts[row.status] = row.count;
   }
 
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  // Exclude archived from total
+  const total = Object.entries(counts)
+    .filter(([status]) => status !== 'archived')
+    .reduce((a, [, count]) => a + count, 0);
 
   return {
     projectId,
@@ -598,4 +614,33 @@ export function setCategory(ticketId: string, category: Ticket['category'] | nul
     .run();
 
   return getTicket(ticketId);
+}
+
+// Archive old completed tickets, keeping only the most recent N
+const MAX_COMPLETED_TICKETS = 10;
+
+export function archiveOldCompletedTickets(projectId: string): number {
+  const db = getDb();
+  const now = new Date().toISOString();
+
+  // Get all completed tickets for this project, sorted by completedAt desc
+  const completed = db.select()
+    .from(tickets)
+    .where(and(eq(tickets.projectId, projectId), eq(tickets.status, 'completed')))
+    .all();
+
+  // Sort by completedAt descending (most recent first)
+  completed.sort((a, b) => (b.completedAt || '').localeCompare(a.completedAt || ''));
+
+  // Archive tickets beyond the limit
+  const toArchive = completed.slice(MAX_COMPLETED_TICKETS);
+
+  for (const ticket of toArchive) {
+    db.update(tickets)
+      .set({ status: 'archived', updatedAt: now })
+      .where(eq(tickets.id, ticket.id))
+      .run();
+  }
+
+  return toArchive.length;
 }

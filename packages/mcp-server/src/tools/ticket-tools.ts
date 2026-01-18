@@ -33,9 +33,10 @@ export function registerTicketTools(server: McpServer): void {
         name: z.string(),
         color: z.string().optional(),
       })).optional().describe('Initial tags for the ticket'),
+      blockedBy: z.array(z.string()).optional().describe('Array of ticket IDs that block this ticket (dependencies)'),
       projectId: z.string().optional().describe('Project ID (optional, uses current project if not specified)'),
     },
-    async ({ title, description, type, priority, category, tags, projectId: inputProjectId }) => {
+    async ({ title, description, type, priority, category, tags, blockedBy, projectId: inputProjectId }) => {
       const sessionId = getCurrentSessionId();
       const projectId = inputProjectId || getCurrentProjectId();
 
@@ -75,6 +76,7 @@ export function registerTicketTools(server: McpServer): void {
         priority,
         category,
         tags: formattedTags,
+        blockedBy,
         createdBy: sessionId,
       });
 
@@ -116,16 +118,17 @@ export function registerTicketTools(server: McpServer): void {
   // List tickets (lightweight - returns summary only to save tokens)
   server.tool(
     'ticket_list',
-    'List tickets in the current project (lightweight summary). Use ticket_get for full details.',
+    'List active tickets in the current project (pending, claimed, in_progress). By default only returns actionable tickets - use "all: true" only when user explicitly asks to see completed/failed tickets.',
     {
       status: z
-        .enum(['pending', 'claimed', 'in_progress', 'completed', 'failed', 'cancelled'])
+        .enum(['pending', 'claimed', 'in_progress', 'completed', 'failed'])
         .optional()
         .describe('Filter by status'),
       priority: z.enum(['low', 'medium', 'high', 'urgent']).optional().describe('Filter by priority'),
+      all: z.boolean().optional().describe('Include completed/failed tickets (default: false)'),
       projectId: z.string().optional().describe('Project ID (optional, uses current project if not specified)'),
     },
-    async ({ status, priority, projectId: inputProjectId }) => {
+    async ({ status, priority, all, projectId: inputProjectId }) => {
       const projectId = inputProjectId || getCurrentProjectId();
       if (!projectId) {
         return {
@@ -134,7 +137,12 @@ export function registerTicketTools(server: McpServer): void {
         };
       }
 
-      const tickets = ticketStore.listTickets(projectId, { status, priority });
+      let tickets = ticketStore.listTickets(projectId, { status, priority });
+
+      // By default, exclude completed/failed tickets unless 'all' is true or specific status is requested
+      if (!all && !status) {
+        tickets = tickets.filter(t => t.status !== 'completed' && t.status !== 'failed');
+      }
       const progress = ticketStore.getTicketProgress(projectId);
 
       // Return lightweight summary (exclude description, comments, checklist, result, metadata)
@@ -332,9 +340,10 @@ export function registerTicketTools(server: McpServer): void {
         'testing', 'docs', 'devops', 'security', 'performance',
         'refactor', 'other'
       ]).optional().describe('New category'),
+      blockedBy: z.array(z.string()).optional().describe('Array of ticket IDs that block this ticket (dependencies)'),
     },
-    async ({ ticketId, title, description, type, priority, category }) => {
-      const ticket = ticketStore.updateTicket(ticketId, { title, description, type, priority, category });
+    async ({ ticketId, title, description, type, priority, category, blockedBy }) => {
+      const ticket = ticketStore.updateTicket(ticketId, { title, description, type, priority, category, blockedBy });
       if (!ticket) {
         return {
           content: [{ type: 'text', text: `Ticket not found: ${ticketId}` }],
