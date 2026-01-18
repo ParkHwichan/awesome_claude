@@ -3,139 +3,96 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as sessionStore from '../store/session-store.js';
 import { getCurrentSession, getCurrentSessionId, getCurrentProject, getCurrentProjectId } from '../state.js';
 import { broadcaster } from '../websocket/broadcaster.js';
-import type {
-  SessionUpdatedEvent,
-} from '@awesome-claude/shared';
+import type { SessionUpdatedEvent } from '@awesome-claude/shared';
 
 export function registerSessionTools(server: McpServer): void {
   // Get current session status
   server.tool(
     'session_status',
-    'Get the current session and project info',
+    'Get current session and project info',
     {},
     async () => {
       const session = getCurrentSession();
       const project = getCurrentProject();
 
       if (!session || !project) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                registered: false,
-                message: 'MCP server may not have started correctly.',
-              }, null, 2),
-            },
-          ],
-        };
+        return { content: [{ type: 'text', text: 'Not registered' }] };
       }
 
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              registered: true,
-              session,
-              project: {
-                id: project.id,
-                name: project.name,
-                workingDirectory: project.workingDirectory,
-              },
-            }, null, 2),
-          },
-        ],
+        content: [{
+          type: 'text',
+          text: `Session: ${session.id.slice(0,8)} (${session.status})
+Project: ${project.name}
+Dir: ${project.workingDirectory}`
+        }]
       };
     }
   );
 
-  // Heartbeat to keep session active
+  // Heartbeat
   server.tool(
     'session_heartbeat',
-    'Send a heartbeat to keep the session active',
+    'Keep session alive',
     {},
     async () => {
       const sessionId = getCurrentSessionId();
       if (!sessionId) {
-        return {
-          content: [{ type: 'text', text: 'No session registered' }],
-          isError: true,
-        };
+        return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
       const session = sessionStore.updateSessionHeartbeat(sessionId);
       if (!session) {
-        return {
-          content: [{ type: 'text', text: 'Session not found' }],
-          isError: true,
-        };
+        return { content: [{ type: 'text', text: 'Session not found' }], isError: true };
       }
 
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ success: true, lastActiveAt: session.lastActiveAt }, null, 2) }],
-      };
+      return { content: [{ type: 'text', text: 'OK' }] };
     }
   );
 
-  // List sessions for a project
+  // List sessions
   server.tool(
     'session_list',
-    'List all sessions for the current project',
+    'List project sessions',
     {
-      projectId: z.string().optional().describe('Project ID (optional, uses current project if not specified)'),
-      includeDisconnected: z.boolean().optional().describe('Include disconnected sessions'),
+      includeDisconnected: z.boolean().optional(),
     },
-    async ({ projectId: inputProjectId, includeDisconnected }) => {
-      const projectId = inputProjectId || getCurrentProjectId();
+    async ({ includeDisconnected }) => {
+      const projectId = getCurrentProjectId();
       if (!projectId) {
-        return {
-          content: [{ type: 'text', text: 'No project found.' }],
-          isError: true,
-        };
+        return { content: [{ type: 'text', text: 'No project' }], isError: true };
       }
 
       const sessions = sessionStore.listSessions(projectId, includeDisconnected);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(sessions, null, 2) }],
-      };
+      const lines = sessions.map(s =>
+        `${s.id.slice(0,8)} | ${s.status.padEnd(12)} | ${s.name || 'unnamed'}`
+      );
+
+      return { content: [{ type: 'text', text: lines.join('\n') || 'No sessions' }] };
     }
   );
 
   // Update session
   server.tool(
     'session_update',
-    'Update current session information',
-    {
-      name: z.string().optional().describe('New session name'),
-    },
+    'Update session name',
+    { name: z.string().optional() },
     async ({ name }) => {
       const sessionId = getCurrentSessionId();
       if (!sessionId) {
-        return {
-          content: [{ type: 'text', text: 'No session registered' }],
-          isError: true,
-        };
+        return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
       const session = sessionStore.updateSession(sessionId, { name });
       if (!session) {
-        return {
-          content: [{ type: 'text', text: 'Session not found' }],
-          isError: true,
-        };
+        return { content: [{ type: 'text', text: 'Session not found' }], isError: true };
       }
 
-      const event: SessionUpdatedEvent = {
-        type: 'session:updated',
-        timestamp: new Date().toISOString(),
-        payload: session,
-      };
-      broadcaster.broadcastToProject(session.projectId, event);
+      broadcaster.broadcastToProject(session.projectId, {
+        type: 'session:updated', timestamp: new Date().toISOString(), payload: session,
+      } as SessionUpdatedEvent);
 
-      return {
-        content: [{ type: 'text', text: JSON.stringify(session, null, 2) }],
-      };
+      return { content: [{ type: 'text', text: 'Updated' }] };
     }
   );
 }

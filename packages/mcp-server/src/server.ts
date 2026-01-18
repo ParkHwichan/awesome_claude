@@ -8,6 +8,7 @@ import {
   registerWorkflowTools,
   registerTaskTools,
   registerTodoTools,
+  registerMetaTools,
 } from './tools/index.js';
 import { initDatabase, closeDatabase } from './db/index.js';
 import { getProjectByWorkingDirectory, createProject } from './store/project-store.js';
@@ -141,6 +142,7 @@ async function main(): Promise<void> {
   registerWorkflowTools(server);
   registerTaskTools(server);
   registerTodoTools(server);
+  registerMetaTools(server);
 
   // Create stdio transport
   const transport = new StdioServerTransport();

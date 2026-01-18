@@ -8,166 +8,127 @@ export function registerProjectTools(server: McpServer): void {
   // Create project
   server.tool(
     'project_create',
-    'Create a new project to organize tickets and sessions',
+    'Create new project',
     {
-      name: z.string().describe('Project name'),
-      workingDirectory: z.string().describe('Working directory path'),
-      description: z.string().optional().describe('Project description'),
+      name: z.string(),
+      workingDirectory: z.string(),
+      description: z.string().optional(),
     },
     async ({ name, workingDirectory, description }) => {
-      // Check if project with same working directory exists
       const existing = store.getProjectByWorkingDirectory(workingDirectory);
       if (existing) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                message: 'Project with this working directory already exists',
-                project: existing,
-              }, null, 2),
-            },
-          ],
-        };
+        return { content: [{ type: 'text', text: `Exists. ID: ${existing.id}` }] };
       }
 
       const project = store.createProject({ name, workingDirectory, description });
+      broadcaster.broadcast({
+        type: 'project:created', timestamp: new Date().toISOString(), payload: project,
+      } as ProjectCreatedEvent);
 
-      const event: ProjectCreatedEvent = {
-        type: 'project:created',
-        timestamp: new Date().toISOString(),
-        payload: project,
-      };
-      broadcaster.broadcast(event);
-
-      return {
-        content: [{ type: 'text', text: JSON.stringify(project, null, 2) }],
-      };
+      return { content: [{ type: 'text', text: `Created. ID: ${project.id}` }] };
     }
   );
 
   // Get project
   server.tool(
     'project_get',
-    'Get a project by ID',
-    {
-      id: z.string().describe('Project ID'),
-    },
+    'Get project by ID',
+    { id: z.string() },
     async ({ id }) => {
       const project = store.getProject(id);
       if (!project) {
-        return {
-          content: [{ type: 'text', text: `Project not found: ${id}` }],
-          isError: true,
-        };
+        return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }
 
       return {
-        content: [{ type: 'text', text: JSON.stringify(project, null, 2) }],
+        content: [{
+          type: 'text',
+          text: `ID: ${project.id}\nName: ${project.name}\nDir: ${project.workingDirectory}`
+        }]
       };
     }
   );
 
-  // Get project by working directory
+  // Get or create project by directory
   server.tool(
     'project_get_by_directory',
-    'Get or create a project by working directory',
+    'Get or create project by directory',
     {
-      workingDirectory: z.string().describe('Working directory path'),
-      name: z.string().optional().describe('Project name (used if creating new)'),
+      workingDirectory: z.string(),
+      name: z.string().optional(),
     },
     async ({ workingDirectory, name }) => {
       let project = store.getProjectByWorkingDirectory(workingDirectory);
+      let created = false;
 
       if (!project) {
-        // Create new project if not exists
         const projectName = name || workingDirectory.split(/[/\\]/).pop() || 'Untitled';
         project = store.createProject({ name: projectName, workingDirectory });
+        created = true;
 
-        const event: ProjectCreatedEvent = {
-          type: 'project:created',
-          timestamp: new Date().toISOString(),
-          payload: project,
-        };
-        broadcaster.broadcast(event);
+        broadcaster.broadcast({
+          type: 'project:created', timestamp: new Date().toISOString(), payload: project,
+        } as ProjectCreatedEvent);
       }
 
-      return {
-        content: [{ type: 'text', text: JSON.stringify(project, null, 2) }],
-      };
+      return { content: [{ type: 'text', text: `${created ? 'Created' : 'Found'}. ID: ${project.id}` }] };
     }
   );
 
   // List projects
   server.tool(
     'project_list',
-    'List all projects with summary information',
+    'List all projects',
     {},
     async () => {
       const projects = store.listProjects();
-      return {
-        content: [{ type: 'text', text: JSON.stringify(projects, null, 2) }],
-      };
+      const lines = projects.map(p =>
+        `${p.id.slice(0,8)} | ${p.name.slice(0,20).padEnd(20)} | ${p.pendingTickets}P ${p.activeSessionCount}S`
+      );
+
+      return { content: [{ type: 'text', text: lines.join('\n') || 'No projects' }] };
     }
   );
 
   // Update project
   server.tool(
     'project_update',
-    'Update a project',
+    'Update project',
     {
-      id: z.string().describe('Project ID'),
-      name: z.string().optional().describe('New name'),
-      description: z.string().optional().describe('New description'),
+      id: z.string(),
+      name: z.string().optional(),
+      description: z.string().optional(),
     },
     async ({ id, name, description }) => {
       const project = store.updateProject(id, { name, description });
       if (!project) {
-        return {
-          content: [{ type: 'text', text: `Project not found: ${id}` }],
-          isError: true,
-        };
+        return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }
 
-      const event: ProjectUpdatedEvent = {
-        type: 'project:updated',
-        timestamp: new Date().toISOString(),
-        payload: project,
-      };
-      broadcaster.broadcast(event);
+      broadcaster.broadcast({
+        type: 'project:updated', timestamp: new Date().toISOString(), payload: project,
+      } as ProjectUpdatedEvent);
 
-      return {
-        content: [{ type: 'text', text: JSON.stringify(project, null, 2) }],
-      };
+      return { content: [{ type: 'text', text: 'Updated' }] };
     }
   );
 
   // Delete project
   server.tool(
     'project_delete',
-    'Delete a project and all its tickets and sessions',
-    {
-      id: z.string().describe('Project ID'),
-    },
+    'Delete project and all data',
+    { id: z.string() },
     async ({ id }) => {
       const deleted = store.deleteProject(id);
       if (!deleted) {
-        return {
-          content: [{ type: 'text', text: `Project not found: ${id}` }],
-          isError: true,
-        };
+        return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }
 
-      const event: ProjectDeletedEvent = {
-        type: 'project:deleted',
-        timestamp: new Date().toISOString(),
-        payload: { id },
-      };
-      broadcaster.broadcast(event);
+      broadcaster.broadcast({
+        type: 'project:deleted', timestamp: new Date().toISOString(), payload: { id },
+      } as ProjectDeletedEvent);
 
-      return {
-        content: [{ type: 'text', text: `Project deleted: ${id}` }],
-      };
+      return { content: [{ type: 'text', text: 'Deleted' }] };
     }
   );
 }
