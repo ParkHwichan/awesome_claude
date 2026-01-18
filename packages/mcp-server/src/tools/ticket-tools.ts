@@ -88,7 +88,7 @@ export function registerTicketTools(server: McpServer): void {
       broadcaster.broadcastToProject(projectId, event);
 
       return {
-        content: [{ type: 'text', text: JSON.stringify(ticket, null, 2) }],
+        content: [{ type: 'text', text: `Ticket created.\nID: ${ticket.id}` }],
       };
     }
   );
