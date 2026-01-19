@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { eq, sql, isNull, max } from 'drizzle-orm';
+import { eq, sql, max } from 'drizzle-orm';
 import { getDb, workflows, tasks, todos } from '../db/index.js';
 import type {
   Workflow,
@@ -69,7 +69,7 @@ function toTodo(row: typeof todos.$inferSelect): Todo {
 }
 
 // Workflow operations
-export function createWorkflow(data: WorkflowCreate): Workflow {
+export async function createWorkflow(data: WorkflowCreate): Promise<Workflow> {
   const db = getDb();
   const now = new Date().toISOString();
   const id = uuidv4();
@@ -84,22 +84,22 @@ export function createWorkflow(data: WorkflowCreate): Workflow {
     metadata: data.metadata ? JSON.stringify(data.metadata) : null,
   };
 
-  db.insert(workflows).values(newWorkflow).run();
+  await db.insert(workflows).values(newWorkflow).run();
 
   return toWorkflow(newWorkflow as typeof workflows.$inferSelect);
 }
 
-export function getWorkflow(id: string): Workflow | null {
+export async function getWorkflow(id: string): Promise<Workflow | null> {
   const db = getDb();
-  const row = db.select().from(workflows).where(eq(workflows.id, id)).get();
+  const row = await db.select().from(workflows).where(eq(workflows.id, id)).get();
   return row ? toWorkflow(row) : null;
 }
 
-export function listWorkflows(status?: string): WorkflowSummary[] {
+export async function listWorkflows(status?: string): Promise<WorkflowSummary[]> {
   const db = getDb();
 
   // Raw SQL for aggregated counts
-  const rows = db.all(sql`
+  const rows = await db.all(sql`
     SELECT
       w.*,
       (SELECT COUNT(*) FROM tasks WHERE workflow_id = w.id) as task_count,
@@ -120,8 +120,8 @@ export function listWorkflows(status?: string): WorkflowSummary[] {
   }));
 }
 
-export function updateWorkflow(id: string, data: WorkflowUpdate): Workflow | null {
-  const existing = getWorkflow(id);
+export async function updateWorkflow(id: string, data: WorkflowUpdate): Promise<Workflow | null> {
+  const existing = await getWorkflow(id);
   if (!existing) return null;
 
   const db = getDb();
@@ -143,32 +143,32 @@ export function updateWorkflow(id: string, data: WorkflowUpdate): Workflow | nul
     updateData.completedAt = now;
   }
 
-  db.update(workflows).set(updateData).where(eq(workflows.id, id)).run();
+  await db.update(workflows).set(updateData).where(eq(workflows.id, id)).run();
 
   return getWorkflow(id);
 }
 
-export function deleteWorkflow(id: string): boolean {
-  const existing = getWorkflow(id);
+export async function deleteWorkflow(id: string): Promise<boolean> {
+  const existing = await getWorkflow(id);
   if (!existing) return false;
 
   const db = getDb();
 
-  db.delete(todos).where(eq(todos.workflowId, id)).run();
-  db.delete(tasks).where(eq(tasks.workflowId, id)).run();
-  db.delete(workflows).where(eq(workflows.id, id)).run();
+  await db.delete(todos).where(eq(todos.workflowId, id)).run();
+  await db.delete(tasks).where(eq(tasks.workflowId, id)).run();
+  await db.delete(workflows).where(eq(workflows.id, id)).run();
 
   return true;
 }
 
 // Task operations
-export function createTask(data: TaskCreate): Task {
+export async function createTask(data: TaskCreate): Promise<Task> {
   const db = getDb();
   const now = new Date().toISOString();
   const id = uuidv4();
 
   // Get max order
-  const maxOrderResult = db.select({ maxOrder: max(tasks.taskOrder) })
+  const maxOrderResult = await db.select({ maxOrder: max(tasks.taskOrder) })
     .from(tasks)
     .where(eq(tasks.workflowId, data.workflowId))
     .get();
@@ -189,20 +189,20 @@ export function createTask(data: TaskCreate): Task {
     metadata: data.metadata ? JSON.stringify(data.metadata) : null,
   };
 
-  db.insert(tasks).values(newTask).run();
+  await db.insert(tasks).values(newTask).run();
 
   return toTask(newTask as typeof tasks.$inferSelect);
 }
 
-export function getTask(id: string): Task | null {
+export async function getTask(id: string): Promise<Task | null> {
   const db = getDb();
-  const row = db.select().from(tasks).where(eq(tasks.id, id)).get();
+  const row = await db.select().from(tasks).where(eq(tasks.id, id)).get();
   return row ? toTask(row) : null;
 }
 
-export function listTasks(workflowId: string): Task[] {
+export async function listTasks(workflowId: string): Promise<Task[]> {
   const db = getDb();
-  const rows = db.select().from(tasks)
+  const rows = await db.select().from(tasks)
     .where(eq(tasks.workflowId, workflowId))
     .all();
 
@@ -212,8 +212,8 @@ export function listTasks(workflowId: string): Task[] {
   return rows.map(toTask);
 }
 
-export function getTaskTree(workflowId: string): TaskTree[] {
-  const taskList = listTasks(workflowId);
+export async function getTaskTree(workflowId: string): Promise<TaskTree[]> {
+  const taskList = await listTasks(workflowId);
   const taskMap = new Map<string, TaskTree>();
   const roots: TaskTree[] = [];
 
@@ -236,8 +236,8 @@ export function getTaskTree(workflowId: string): TaskTree[] {
   return roots;
 }
 
-export function updateTask(id: string, data: TaskUpdate): Task | null {
-  const existing = getTask(id);
+export async function updateTask(id: string, data: TaskUpdate): Promise<Task | null> {
+  const existing = await getTask(id);
   if (!existing) return null;
 
   const db = getDb();
@@ -260,29 +260,29 @@ export function updateTask(id: string, data: TaskUpdate): Task | null {
     updateData.completedAt = now;
   }
 
-  db.update(tasks).set(updateData).where(eq(tasks.id, id)).run();
+  await db.update(tasks).set(updateData).where(eq(tasks.id, id)).run();
 
   return getTask(id);
 }
 
-export function deleteTask(id: string): boolean {
-  const existing = getTask(id);
+export async function deleteTask(id: string): Promise<boolean> {
+  const existing = await getTask(id);
   if (!existing) return false;
 
   const db = getDb();
-  db.delete(tasks).where(eq(tasks.id, id)).run();
+  await db.delete(tasks).where(eq(tasks.id, id)).run();
 
   return true;
 }
 
 // Todo operations
-export function createTodo(data: TodoCreate): Todo {
+export async function createTodo(data: TodoCreate): Promise<Todo> {
   const db = getDb();
   const now = new Date().toISOString();
   const id = uuidv4();
 
   // Get max order
-  const maxOrderResult = db.select({ maxOrder: max(todos.todoOrder) })
+  const maxOrderResult = await db.select({ maxOrder: max(todos.todoOrder) })
     .from(todos)
     .where(eq(todos.workflowId, data.workflowId))
     .get();
@@ -300,20 +300,20 @@ export function createTodo(data: TodoCreate): Todo {
     updatedAt: now,
   };
 
-  db.insert(todos).values(newTodo).run();
+  await db.insert(todos).values(newTodo).run();
 
   return toTodo(newTodo as typeof todos.$inferSelect);
 }
 
-export function getTodo(id: string): Todo | null {
+export async function getTodo(id: string): Promise<Todo | null> {
   const db = getDb();
-  const row = db.select().from(todos).where(eq(todos.id, id)).get();
+  const row = await db.select().from(todos).where(eq(todos.id, id)).get();
   return row ? toTodo(row) : null;
 }
 
-export function listTodos(workflowId: string): Todo[] {
+export async function listTodos(workflowId: string): Promise<Todo[]> {
   const db = getDb();
-  const rows = db.select().from(todos)
+  const rows = await db.select().from(todos)
     .where(eq(todos.workflowId, workflowId))
     .all();
 
@@ -323,8 +323,8 @@ export function listTodos(workflowId: string): Todo[] {
   return rows.map(toTodo);
 }
 
-export function updateTodo(id: string, data: TodoUpdate): Todo | null {
-  const existing = getTodo(id);
+export async function updateTodo(id: string, data: TodoUpdate): Promise<Todo | null> {
+  const existing = await getTodo(id);
   if (!existing) return null;
 
   const db = getDb();
@@ -343,20 +343,22 @@ export function updateTodo(id: string, data: TodoUpdate): Todo | null {
     updateData.completedAt = now;
   }
 
-  db.update(todos).set(updateData).where(eq(todos.id, id)).run();
+  await db.update(todos).set(updateData).where(eq(todos.id, id)).run();
 
   return getTodo(id);
 }
 
-export function batchUpdateTodos(data: TodoBatch): Todo[] {
+export async function batchUpdateTodos(data: TodoBatch): Promise<Todo[]> {
   const db = getDb();
   const now = new Date().toISOString();
 
   // Delete existing todos for the workflow
-  db.delete(todos).where(eq(todos.workflowId, data.workflowId)).run();
+  await db.delete(todos).where(eq(todos.workflowId, data.workflowId)).run();
 
   // Insert new todos
-  const result: Todo[] = data.todos.map((item, index) => {
+  const result: Todo[] = [];
+  for (let index = 0; index < data.todos.length; index++) {
+    const item = data.todos[index];
     const id = uuidv4();
     const newTodo = {
       id,
@@ -370,28 +372,27 @@ export function batchUpdateTodos(data: TodoBatch): Todo[] {
       completedAt: item.status === 'completed' ? now : null,
     };
 
-    db.insert(todos).values(newTodo).run();
-
-    return toTodo(newTodo as typeof todos.$inferSelect);
-  });
+    await db.insert(todos).values(newTodo).run();
+    result.push(toTodo(newTodo as typeof todos.$inferSelect));
+  }
 
   return result;
 }
 
-export function deleteTodo(id: string): boolean {
-  const existing = getTodo(id);
+export async function deleteTodo(id: string): Promise<boolean> {
+  const existing = await getTodo(id);
   if (!existing) return false;
 
   const db = getDb();
-  db.delete(todos).where(eq(todos.id, id)).run();
+  await db.delete(todos).where(eq(todos.id, id)).run();
 
   return true;
 }
 
-export function getTodoProgress(workflowId: string): TodoProgress {
+export async function getTodoProgress(workflowId: string): Promise<TodoProgress> {
   const db = getDb();
 
-  const rows = db.all(sql`
+  const rows = await db.all(sql`
     SELECT status, COUNT(*) as count FROM todos WHERE workflow_id = ${workflowId} GROUP BY status
   `) as { status: string; count: number }[];
 

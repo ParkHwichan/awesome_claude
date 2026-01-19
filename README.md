@@ -18,36 +18,16 @@ Multi-session task management system for Claude Code. Enables multiple Claude Co
 
 - [Node.js](https://nodejs.org/) >= 20.0.0
 - [pnpm](https://pnpm.io/) >= 9.0.0
-- [Bun](https://bun.sh/) (for building MCP server executable)
-- [Rust](https://www.rust-lang.org/) (for building Tauri app)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
+- [Rust](https://www.rust-lang.org/) (optional, for Desktop App)
 
-## Installation
-
-### 1. Clone the repository
+## Quick Start
 
 ```bash
 git clone https://github.com/ParkHwichan/awesome_claude.git
 cd awesome_claude
-```
-
-### 2. Install dependencies
-
-```bash
 pnpm install
-```
-
-### 3. Build the project
-
-```bash
-# Build shared types
-pnpm build:shared
-
-# Build MCP server executable
-pnpm build:mcp-exe
-
-# Build Tauri desktop app
-pnpm build:tauri
+pnpm --filter @awesome-claude/shared build
 ```
 
 ## Configuration
@@ -56,62 +36,47 @@ pnpm build:tauri
 
 Add the MCP server to your Claude Code configuration. Create or edit `.mcp.json` in your project root:
 
+First, install tsx globally:
+```bash
+npm install -g tsx
+```
+
 **Windows:**
 ```json
 {
   "mcpServers": {
     "awesome-claude": {
-      "command": "C:\\path\\to\\awesome_claude\\packages\\tauri-app\\src-tauri\\binaries\\awesome-claude-mcp-x86_64-pc-windows-msvc.exe"
+      "command": "cmd",
+      "args": ["/c", "tsx", "C:\\path\\to\\awesome_claude\\packages\\mcp-server\\src\\server.ts"]
     }
   }
 }
 ```
 
-**macOS/Linux (using Node.js):**
+**macOS/Linux:**
 ```json
 {
   "mcpServers": {
     "awesome-claude": {
-      "command": "node",
-      "args": ["path/to/awesome_claude/packages/mcp-server/dist/server.js"]
+      "command": "tsx",
+      "args": ["/path/to/awesome_claude/packages/mcp-server/src/server.ts"]
     }
   }
 }
 ```
 
-Or using tsx for development:
-```json
-{
-  "mcpServers": {
-    "awesome-claude": {
-      "command": "npx",
-      "args": ["tsx", "path/to/awesome_claude/packages/mcp-server/src/server.ts"]
-    }
-  }
-}
-```
+> **Important:** Do NOT use `cwd` - the MCP server uses `process.cwd()` to detect your project directory.
 
 ## Usage
 
-### 1. Start the Desktop App
-
-Run the built Tauri app from:
-- **Windows**: `packages/tauri-app/src-tauri/target/release/awesome-claude.exe`
-- **macOS**: `packages/tauri-app/src-tauri/target/release/bundle/macos/Awesome Claude.app`
-
-Or for development:
-```bash
-pnpm dev:tauri
-```
-
-### 2. Start Claude Code
+### 1. Start Claude Code
 
 Open Claude Code in any directory. The MCP server will automatically:
 - Register the session
 - Create or find the project for the current directory
 - Connect to the desktop app via WebSocket
 
-### 3. Available MCP Tools
+### 2. Available MCP Tools
 
 #### Project Tools
 | Tool | Description |
@@ -142,7 +107,7 @@ Open Claude Code in any directory. The MCP server will automatically:
 | `ticket_update` | Update ticket details |
 | `ticket_add_comment` | Add progress updates |
 
-### 4. Example Workflow
+### 3. Example Workflow
 
 ```
 Claude Code Session 1:
@@ -161,28 +126,34 @@ Claude Code Session 1:
 > Use ticket_claim and continue work
 ```
 
-## Development
+## Desktop App (Optional)
 
-### Run in Development Mode
+The Desktop App provides a visual Kanban board for managing tickets. Requires Rust.
+
+### Build & Run
 
 ```bash
-# Terminal 1: Start shared types watcher
-pnpm --filter @awesome-claude/shared dev
-
-# Terminal 2: Start Tauri app in dev mode
+# Development mode
 pnpm dev:tauri
+
+# Production build
+pnpm build:tauri
 ```
 
-### Project Structure
+Built app location:
+- **Windows**: `packages/tauri-app/src-tauri/target/release/bundle/nsis/Awesome Claude_*_x64-setup.exe`
+- **macOS**: `packages/tauri-app/src-tauri/target/release/bundle/macos/Awesome Claude.app`
+
+## Project Structure
 
 ```
 packages/
   shared/          # Shared TypeScript types
-  mcp-server/      # MCP server (Node.js/Bun)
+  mcp-server/      # MCP server (runs via npx tsx)
   tauri-app/       # Desktop app (Tauri + React + Vite)
 ```
 
-### Database
+## Database
 
 SQLite database is stored at:
 - **Windows**: `%APPDATA%/awesome-claude/data/awesome-claude.db`

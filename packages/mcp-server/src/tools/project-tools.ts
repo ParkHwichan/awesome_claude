@@ -15,12 +15,12 @@ export function registerProjectTools(server: McpServer): void {
       description: z.string().optional(),
     },
     async ({ name, workingDirectory, description }) => {
-      const existing = store.getProjectByWorkingDirectory(workingDirectory);
+      const existing = await store.getProjectByWorkingDirectory(workingDirectory);
       if (existing) {
         return { content: [{ type: 'text', text: `Exists. ID: ${existing.id}` }] };
       }
 
-      const project = store.createProject({ name, workingDirectory, description });
+      const project = await store.createProject({ name, workingDirectory, description });
       broadcaster.broadcast({
         type: 'project:created', timestamp: new Date().toISOString(), payload: project,
       } as ProjectCreatedEvent);
@@ -35,7 +35,7 @@ export function registerProjectTools(server: McpServer): void {
     'Get project by ID',
     { id: z.string() },
     async ({ id }) => {
-      const project = store.getProject(id);
+      const project = await store.getProject(id);
       if (!project) {
         return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }
@@ -58,12 +58,12 @@ export function registerProjectTools(server: McpServer): void {
       name: z.string().optional(),
     },
     async ({ workingDirectory, name }) => {
-      let project = store.getProjectByWorkingDirectory(workingDirectory);
+      let project = await store.getProjectByWorkingDirectory(workingDirectory);
       let created = false;
 
       if (!project) {
         const projectName = name || workingDirectory.split(/[/\\]/).pop() || 'Untitled';
-        project = store.createProject({ name: projectName, workingDirectory });
+        project = await store.createProject({ name: projectName, workingDirectory });
         created = true;
 
         broadcaster.broadcast({
@@ -81,7 +81,7 @@ export function registerProjectTools(server: McpServer): void {
     'List all projects',
     {},
     async () => {
-      const projects = store.listProjects();
+      const projects = await store.listProjects();
       const lines = projects.map(p =>
         `${p.id.slice(0,8)} | ${p.name.slice(0,20).padEnd(20)} | ${p.pendingTickets}P ${p.activeSessionCount}S`
       );
@@ -100,7 +100,7 @@ export function registerProjectTools(server: McpServer): void {
       description: z.string().optional(),
     },
     async ({ id, name, description }) => {
-      const project = store.updateProject(id, { name, description });
+      const project = await store.updateProject(id, { name, description });
       if (!project) {
         return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }
@@ -119,7 +119,7 @@ export function registerProjectTools(server: McpServer): void {
     'Delete project and all data',
     { id: z.string() },
     async ({ id }) => {
-      const deleted = store.deleteProject(id);
+      const deleted = await store.deleteProject(id);
       if (!deleted) {
         return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }

@@ -1,5 +1,6 @@
 use rusqlite::{Connection, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::PathBuf;
 
 fn get_db_path() -> PathBuf {
@@ -66,14 +67,30 @@ pub struct Ticket {
     pub description: Option<String>,
     pub status: String,
     pub priority: String,
+    #[serde(rename = "type")]
+    pub ticket_type: String,
+    pub due_date: Option<String>,
+    #[serde(default)]
+    pub blocked_by: Option<Value>,
+    #[serde(default)]
+    pub blocks: Option<Value>,
+    #[serde(default)]
+    pub checklist: Option<Value>,
+    #[serde(default)]
+    pub comments: Option<Value>,
+    #[serde(default)]
+    pub tags: Option<Value>,
+    pub category: Option<String>,
     pub claimed_by: Option<String>,
     pub claimed_at: Option<String>,
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
-    pub result: Option<String>,
-    pub metadata: Option<String>,
+    #[serde(default)]
+    pub result: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
 }
 
 pub fn list_projects() -> Result<Vec<ProjectSummary>> {
@@ -155,10 +172,19 @@ pub fn cleanup_dead_sessions() -> Result<usize> {
     for (id, ppid) in sessions {
         // Clean up if ppid is 0/invalid OR if process is dead
         if ppid <= 0 || !is_process_alive(ppid as u32) {
+            // Release claimed tickets back to pending
             conn.execute(
-                "UPDATE sessions SET status = 'disconnected', disconnected_at = datetime('now') WHERE id = ?",
+                "UPDATE tickets SET claimed_by = NULL, claimed_at = NULL, status = 'pending'
+                 WHERE claimed_by = ? AND status NOT IN ('completed', 'failed')",
                 [&id]
             )?;
+
+            // Mark session as disconnected
+            conn.execute(
+                "UPDATE sessions SET status = 'disconnected', disconnected_at = datetime('now'), current_ticket_id = NULL WHERE id = ?",
+                [&id]
+            )?;
+            println!("[Cleanup] Dead session: {} (ppid: {})", id, ppid);
             cleaned += 1;
         }
     }
@@ -195,11 +221,18 @@ fn is_process_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+fn parse_json(s: Option<String>) -> Option<Value> {
+    s.and_then(|v| serde_json::from_str(&v).ok())
+}
+
 pub fn list_tickets() -> Result<Vec<Ticket>> {
     let conn = get_connection()?;
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, title, description, status, priority, claimed_by, claimed_at,
-                created_by, created_at, updated_at, completed_at, result, metadata
+        "SELECT id, project_id, title, description, status, priority,
+                COALESCE(type, 'task') as type, due_date, blocked_by, blocks,
+                checklist, comments, tags, category,
+                claimed_by, claimed_at, created_by, created_at, updated_at,
+                completed_at, result, metadata
          FROM tickets
          ORDER BY created_at DESC"
     )?;
@@ -212,14 +245,22 @@ pub fn list_tickets() -> Result<Vec<Ticket>> {
             description: row.get(3)?,
             status: row.get(4)?,
             priority: row.get(5)?,
-            claimed_by: row.get(6)?,
-            claimed_at: row.get(7)?,
-            created_by: row.get(8)?,
-            created_at: row.get(9)?,
-            updated_at: row.get(10)?,
-            completed_at: row.get(11)?,
-            result: row.get(12)?,
-            metadata: row.get(13)?,
+            ticket_type: row.get(6)?,
+            due_date: row.get(7)?,
+            blocked_by: parse_json(row.get(8)?),
+            blocks: parse_json(row.get(9)?),
+            checklist: parse_json(row.get(10)?),
+            comments: parse_json(row.get(11)?),
+            tags: parse_json(row.get(12)?),
+            category: row.get(13)?,
+            claimed_by: row.get(14)?,
+            claimed_at: row.get(15)?,
+            created_by: row.get(16)?,
+            created_at: row.get(17)?,
+            updated_at: row.get(18)?,
+            completed_at: row.get(19)?,
+            result: parse_json(row.get(20)?),
+            metadata: parse_json(row.get(21)?),
         })
     })?;
 
@@ -254,8 +295,11 @@ pub fn update_ticket(
 
     // Return updated ticket
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, title, description, status, priority, claimed_by, claimed_at,
-                created_by, created_at, updated_at, completed_at, result, metadata
+        "SELECT id, project_id, title, description, status, priority,
+                COALESCE(type, 'task') as type, due_date, blocked_by, blocks,
+                checklist, comments, tags, category,
+                claimed_by, claimed_at, created_by, created_at, updated_at,
+                completed_at, result, metadata
          FROM tickets WHERE id = ?"
     )?;
 
@@ -267,14 +311,22 @@ pub fn update_ticket(
             description: row.get(3)?,
             status: row.get(4)?,
             priority: row.get(5)?,
-            claimed_by: row.get(6)?,
-            claimed_at: row.get(7)?,
-            created_by: row.get(8)?,
-            created_at: row.get(9)?,
-            updated_at: row.get(10)?,
-            completed_at: row.get(11)?,
-            result: row.get(12)?,
-            metadata: row.get(13)?,
+            ticket_type: row.get(6)?,
+            due_date: row.get(7)?,
+            blocked_by: parse_json(row.get(8)?),
+            blocks: parse_json(row.get(9)?),
+            checklist: parse_json(row.get(10)?),
+            comments: parse_json(row.get(11)?),
+            tags: parse_json(row.get(12)?),
+            category: row.get(13)?,
+            claimed_by: row.get(14)?,
+            claimed_at: row.get(15)?,
+            created_by: row.get(16)?,
+            created_at: row.get(17)?,
+            updated_at: row.get(18)?,
+            completed_at: row.get(19)?,
+            result: parse_json(row.get(20)?),
+            metadata: parse_json(row.get(21)?),
         })
     })
 }

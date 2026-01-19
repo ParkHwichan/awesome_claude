@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import type { AppEvent } from '@awesome-claude/shared';
 import { getCurrentSessionId } from '../state.js';
 
-const TAURI_WS_URL = 'ws://127.0.0.1:4000';
+const TAURI_WS_URL = 'ws://127.0.0.1:61987';
 const RECONNECT_INTERVAL = 3000;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
@@ -151,7 +151,7 @@ class WebSocketBroadcaster {
   // Legacy methods kept for compatibility
   start(): Promise<number> {
     this.connect();
-    return Promise.resolve(4000);
+    return Promise.resolve(61987);
   }
 
   stop(): void {
@@ -163,7 +163,7 @@ class WebSocketBroadcaster {
   }
 
   getPort(): number {
-    return 4000;
+    return 61987;
   }
 
   getClientCount(): number {

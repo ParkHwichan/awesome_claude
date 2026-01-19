@@ -41,7 +41,7 @@ Dir: ${project.workingDirectory}`
         return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
-      const session = sessionStore.updateSessionHeartbeat(sessionId);
+      const session = await sessionStore.updateSessionHeartbeat(sessionId);
       if (!session) {
         return { content: [{ type: 'text', text: 'Session not found' }], isError: true };
       }
@@ -63,7 +63,7 @@ Dir: ${project.workingDirectory}`
         return { content: [{ type: 'text', text: 'No project' }], isError: true };
       }
 
-      const sessions = sessionStore.listSessions(projectId, includeDisconnected);
+      const sessions = await sessionStore.listSessions(projectId, includeDisconnected);
       const lines = sessions.map(s =>
         `${s.id.slice(0,8)} | ${s.status.padEnd(12)} | ${s.name || 'unnamed'}`
       );
@@ -83,7 +83,7 @@ Dir: ${project.workingDirectory}`
         return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
-      const session = sessionStore.updateSession(sessionId, { name });
+      const session = await sessionStore.updateSession(sessionId, { name });
       if (!session) {
         return { content: [{ type: 'text', text: 'Session not found' }], isError: true };
       }

@@ -22,6 +22,7 @@ import { broadcaster } from './websocket/broadcaster.js';
 import { conversationWatcher } from './watcher/index.js';
 import { basename } from 'path';
 
+import { execSync } from 'child_process';
 import { setCurrentProject, setCurrentSession, getCurrentSession } from './state.js';
 import type { SessionRegisteredEvent, SessionDisconnectedEvent, ProjectCreatedEvent } from '@awesome-claude/shared';
 
@@ -33,16 +34,32 @@ const CLEANUP_INTERVAL_MS = 30_000;
 
 // Check if a process is still running
 function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0); // signal 0 = just check if exists
-    return true;
-  } catch {
-    return false;
+  if (process.platform === 'win32') {
+    // Windows: use tasklist command to check if process exists
+    try {
+      const result = execSync(`tasklist /FI "PID eq ${pid}" /NH`, {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 5000,
+      });
+      // If process exists, output contains the PID; otherwise "INFO: No tasks..."
+      return result.includes(String(pid));
+    } catch {
+      return false;
+    }
+  } else {
+    // Unix/Linux: signal 0 just checks if process exists
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
 // Auto-register project and session based on working directory and PPID
-function autoRegister(): void {
+async function autoRegister(): Promise<void> {
   const workingDirectory = process.cwd();
   const projectName = basename(workingDirectory);
   const ppid = process.ppid;
@@ -51,13 +68,13 @@ function autoRegister(): void {
   console.error(`Parent PID (session ID): ${ppid}`);
 
   // Clean up dead sessions first
-  cleanupDeadSessions(isProcessAlive);
+  await cleanupDeadSessions(isProcessAlive);
 
   // Get or create project
-  let project = getProjectByWorkingDirectory(workingDirectory);
+  let project = await getProjectByWorkingDirectory(workingDirectory);
   let isNewProject = false;
   if (!project) {
-    project = createProject({
+    project = await createProject({
       name: projectName,
       workingDirectory,
       description: `Auto-created project for ${projectName}`,
@@ -80,14 +97,14 @@ function autoRegister(): void {
   }
 
   // Check if session with this PPID already exists
-  let session = getSessionByPpid(ppid);
+  let session = await getSessionByPpid(ppid);
   let isNewSession = false;
   if (session) {
     console.error(`Reusing existing session for PPID ${ppid}: ${session.id}`);
   } else {
     // Create new session with PPID - use short ID for display
     const shortId = Math.random().toString(36).substring(2, 8);
-    session = registerSessionByPpid({
+    session = await registerSessionByPpid({
       projectId: project.id,
       ppid,
       name: `Session ${shortId}`,
@@ -124,7 +141,7 @@ async function main(): Promise<void> {
   broadcaster.connect();
 
   // Auto-register project and session (broadcasts will be queued)
-  autoRegister();
+  await autoRegister();
 
   // Start watching conversation JSONL files
   conversationWatcher.start(process.cwd());
@@ -148,15 +165,15 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
 
   // Start periodic dead session cleanup
-  const cleanupInterval = setInterval(() => {
-    const cleaned = cleanupDeadSessions(isProcessAlive);
+  const cleanupInterval = setInterval(async () => {
+    const cleaned = await cleanupDeadSessions(isProcessAlive);
     if (cleaned > 0) {
       console.error(`Periodic cleanup: removed ${cleaned} dead session(s)`);
     }
   }, CLEANUP_INTERVAL_MS);
 
   // Handle graceful shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
     console.error('Shutting down...');
 
     // Clear cleanup interval
@@ -173,7 +190,7 @@ async function main(): Promise<void> {
       };
       broadcaster.broadcast(disconnectEvent);
 
-      disconnectSession(currentSession.id);
+      await disconnectSession(currentSession.id);
       console.error(`Disconnected session: ${currentSession.id}`);
     }
 
@@ -183,12 +200,12 @@ async function main(): Promise<void> {
     process.exit(0);
   };
 
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => { shutdown(); });
+  process.on('SIGTERM', () => { shutdown(); });
 
   // Handle stdin close (when Claude Code disconnects)
-  process.stdin.on('close', shutdown);
-  process.stdin.on('end', shutdown);
+  process.stdin.on('close', () => { shutdown(); });
+  process.stdin.on('end', () => { shutdown(); });
 
   // Connect and run
   await server.connect(transport);

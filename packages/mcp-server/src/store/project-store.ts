@@ -22,7 +22,7 @@ function toProject(row: typeof projects.$inferSelect): Project {
 }
 
 // Project operations
-export function createProject(data: CreateProjectInput): Project {
+export async function createProject(data: CreateProjectInput): Promise<Project> {
   const db = getDb();
   const now = new Date().toISOString();
   const id = uuidv4();
@@ -37,28 +37,28 @@ export function createProject(data: CreateProjectInput): Project {
     metadata: data.metadata ? JSON.stringify(data.metadata) : null,
   };
 
-  db.insert(projects).values(newProject).run();
+  await db.insert(projects).values(newProject).run();
 
   return toProject(newProject as typeof projects.$inferSelect);
 }
 
-export function getProject(id: string): Project | null {
+export async function getProject(id: string): Promise<Project | null> {
   const db = getDb();
-  const row = db.select().from(projects).where(eq(projects.id, id)).get();
+  const row = await db.select().from(projects).where(eq(projects.id, id)).get();
   return row ? toProject(row) : null;
 }
 
-export function getProjectByWorkingDirectory(workingDirectory: string): Project | null {
+export async function getProjectByWorkingDirectory(workingDirectory: string): Promise<Project | null> {
   const db = getDb();
-  const row = db.select().from(projects).where(eq(projects.workingDirectory, workingDirectory)).get();
+  const row = await db.select().from(projects).where(eq(projects.workingDirectory, workingDirectory)).get();
   return row ? toProject(row) : null;
 }
 
-export function listProjects(): ProjectSummary[] {
+export async function listProjects(): Promise<ProjectSummary[]> {
   const db = getDb();
 
   // Get all projects with aggregated counts using raw SQL for subqueries
-  const rows = db.all(sql`
+  const rows = await db.all(sql`
     SELECT
       p.*,
       (SELECT COUNT(*) FROM tickets WHERE project_id = p.id) as ticket_count,
@@ -82,8 +82,8 @@ export function listProjects(): ProjectSummary[] {
   }));
 }
 
-export function updateProject(id: string, data: UpdateProjectInput): Project | null {
-  const existing = getProject(id);
+export async function updateProject(id: string, data: UpdateProjectInput): Promise<Project | null> {
+  const existing = await getProject(id);
   if (!existing) return null;
 
   const db = getDb();
@@ -97,21 +97,21 @@ export function updateProject(id: string, data: UpdateProjectInput): Project | n
   if (data.description !== undefined) updateData.description = data.description;
   if (data.metadata !== undefined) updateData.metadata = data.metadata ? JSON.stringify(data.metadata) : null;
 
-  db.update(projects).set(updateData).where(eq(projects.id, id)).run();
+  await db.update(projects).set(updateData).where(eq(projects.id, id)).run();
 
   return getProject(id);
 }
 
-export function deleteProject(id: string): boolean {
-  const existing = getProject(id);
+export async function deleteProject(id: string): Promise<boolean> {
+  const existing = await getProject(id);
   if (!existing) return false;
 
   const db = getDb();
 
   // Cascade delete (FK constraints should handle this, but be explicit)
-  db.delete(tickets).where(eq(tickets.projectId, id)).run();
-  db.delete(sessions).where(eq(sessions.projectId, id)).run();
-  db.delete(projects).where(eq(projects.id, id)).run();
+  await db.delete(tickets).where(eq(tickets.projectId, id)).run();
+  await db.delete(sessions).where(eq(sessions.projectId, id)).run();
+  await db.delete(projects).where(eq(projects.id, id)).run();
 
   return true;
 }

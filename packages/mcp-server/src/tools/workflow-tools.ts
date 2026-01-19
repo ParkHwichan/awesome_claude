@@ -24,7 +24,7 @@ export function registerWorkflowTools(server: McpServer): void {
       tags: z.array(z.string()).optional().describe('Tags for categorization'),
     },
     async ({ name, description, model, sessionId, workingDirectory, tags }) => {
-      const workflow = store.createWorkflow({
+      const workflow = await store.createWorkflow({
         name,
         description,
         metadata: {
@@ -61,7 +61,7 @@ export function registerWorkflowTools(server: McpServer): void {
       id: z.string().describe('Workflow ID'),
     },
     async ({ id }) => {
-      const workflow = store.getWorkflow(id);
+      const workflow = await store.getWorkflow(id);
       if (!workflow) {
         return {
           content: [{ type: 'text', text: `Workflow not found: ${id}` }],
@@ -86,7 +86,7 @@ export function registerWorkflowTools(server: McpServer): void {
         .describe('Filter by workflow status'),
     },
     async ({ status }) => {
-      const workflows = store.listWorkflows(status);
+      const workflows = await store.listWorkflows(status);
       return {
         content: [{ type: 'text', text: JSON.stringify(workflows, null, 2) }],
       };
@@ -107,7 +107,7 @@ export function registerWorkflowTools(server: McpServer): void {
         .describe('New status'),
     },
     async ({ id, name, description, status }) => {
-      const previousWorkflow = store.getWorkflow(id);
+      const previousWorkflow = await store.getWorkflow(id);
       if (!previousWorkflow) {
         return {
           content: [{ type: 'text', text: `Workflow not found: ${id}` }],
@@ -115,7 +115,7 @@ export function registerWorkflowTools(server: McpServer): void {
         };
       }
 
-      const workflow = store.updateWorkflow(id, { name, description, status });
+      const workflow = await store.updateWorkflow(id, { name, description, status });
       if (!workflow) {
         return {
           content: [{ type: 'text', text: `Failed to update workflow: ${id}` }],
@@ -157,7 +157,7 @@ export function registerWorkflowTools(server: McpServer): void {
       id: z.string().describe('Workflow ID'),
     },
     async ({ id }) => {
-      const deleted = store.deleteWorkflow(id);
+      const deleted = await store.deleteWorkflow(id);
       if (!deleted) {
         return {
           content: [{ type: 'text', text: `Workflow not found: ${id}` }],

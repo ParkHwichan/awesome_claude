@@ -18,12 +18,18 @@ import {
   CircleIcon,
   ClockIcon,
   CheckCircleIcon,
-  XCircleIcon,
   PencilIcon,
   TrashIcon,
   ArrowRightIcon,
   AlertTriangleIcon,
   LinkIcon,
+  BugIcon,
+  SparklesIcon,
+  BookOpenIcon,
+  LayersIcon,
+  ListTodoIcon,
+  CalendarIcon,
+  UserIcon,
 } from 'lucide-react';
 
 interface KanbanBoardProps {
@@ -36,14 +42,12 @@ const COLUMNS = [
   { id: 'pending', label: 'Pending', icon: CircleIcon, color: 'text-muted-foreground' },
   { id: 'in_progress', label: 'In Progress', icon: ClockIcon, color: 'text-info' },
   { id: 'completed', label: 'Completed', icon: CheckCircleIcon, color: 'text-success' },
-  { id: 'failed', label: 'Failed', icon: XCircleIcon, color: 'text-error' },
 ] as const;
 
 const STATUSES: { value: TicketStatus; label: string }[] = [
   { value: 'pending', label: 'Pending' },
   { value: 'in_progress', label: 'In Progress' },
   { value: 'completed', label: 'Completed' },
-  { value: 'failed', label: 'Failed' },
 ];
 
 const getPriorityColor = (priority: string) => {
@@ -71,6 +75,31 @@ const getPriorityBorder = (priority: string) => {
       return 'border-l-priority-low';
   }
 };
+
+const getTypeIcon = (type: string) => {
+  switch (type) {
+    case 'bug':
+      return BugIcon;
+    case 'feature':
+      return SparklesIcon;
+    case 'story':
+      return BookOpenIcon;
+    case 'epic':
+      return LayersIcon;
+    default:
+      return ListTodoIcon;
+  }
+};
+
+// Helper to find ticket by full or short ID
+function findTicketById(tickets: Ticket[], id: string): Ticket | undefined {
+  const exact = tickets.find(t => t.id === id);
+  if (exact) return exact;
+  if (id.length >= 8) {
+    return tickets.find(t => t.id.startsWith(id));
+  }
+  return undefined;
+}
 
 export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: KanbanBoardProps) {
   const { updateTicket, deleteTicket } = useProjectStore();
@@ -110,7 +139,7 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
 
   return (
     <>
-      <div className="flex gap-4 h-full p-6 overflow-x-auto">
+      <div className="flex gap-5 h-full p-6 overflow-x-auto overflow-y-hidden">
         {COLUMNS.map((column) => {
           const columnTickets = getTicketsByStatus(column.id);
           const Icon = column.icon;
@@ -118,32 +147,38 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
           return (
             <div
               key={column.id}
-              className="flex flex-col w-72 shrink-0 bg-card/30 rounded-xl"
+              className="flex flex-col flex-1 h-full min-h-0"
             >
               {/* Column Header */}
-              <div className="flex items-center gap-2 px-4 py-3 border-b border-border/50">
+              <div className="flex items-center gap-2 px-1 py-2 mb-3">
                 <Icon className={cn('w-4 h-4', column.color)} />
-                <span className="text-sm font-medium text-foreground">{column.label}</span>
-                <span className="ml-auto text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+                <span className="text-[13px] font-medium text-foreground">{column.label}</span>
+                <span className="text-xs text-muted-foreground">
                   {columnTickets.length}
                 </span>
               </div>
 
               {/* Column Content */}
-              <ScrollArea className="flex-1">
-                <div className="p-3 space-y-2">
+              <ScrollArea className="flex-1 min-h-0">
+                <div className="space-y-2 pr-2">
                   {columnTickets.length === 0 ? (
-                    <div className="text-center py-8 text-sm text-muted-foreground">
+                    <div className="text-center py-12 text-sm text-muted-foreground/50">
                       No tickets
                     </div>
                   ) : (
                     columnTickets.map((ticket) => {
-                      // Check for unresolved blockers
+                      // Check for unresolved blockers (ignore deleted/archived/completed)
                       const hasUnresolvedBlockers = ticket.blockedBy?.some(blockerId => {
-                        const blocker = tickets.find(t => t.id === blockerId);
-                        return blocker && blocker.status !== 'completed';
+                        const blocker = findTicketById(tickets, blockerId);
+                        // Not found = deleted, so not a blocker
+                        if (!blocker) return false;
+                        // Completed or archived = resolved
+                        return blocker.status !== 'completed' && blocker.status !== 'archived';
                       });
                       const blocksCount = ticket.blocks?.length || 0;
+                      const TypeIcon = getTypeIcon(ticket.type);
+                      const checklistTotal = ticket.checklist?.length || 0;
+                      const checklistDone = ticket.checklist?.filter(c => c.completed).length || 0;
 
                       return (
                       <ContextMenu key={ticket.id}>
@@ -151,53 +186,93 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
                           <button
                             onClick={() => onSelectTicket(ticket.id)}
                             className={cn(
-                              'w-full text-left p-3 rounded-lg border-l-4 transition-all',
-                              'bg-card hover:bg-card/80 border border-border/50',
-                              getPriorityBorder(ticket.priority),
-                              selectedTicketId === ticket.id && 'ring-2 ring-primary',
-                              hasUnresolvedBlockers && 'border-warning/50'
+                              'group w-full text-left px-3 py-2.5 rounded-lg transition-all duration-150',
+                              'bg-card/80 hover:bg-card border border-border/40 hover:border-border/80',
+                              selectedTicketId === ticket.id && 'ring-1 ring-primary/50 border-primary/50 bg-card',
+                              hasUnresolvedBlockers && 'border-l-2 border-l-warning',
+                              (ticket.status === 'in_progress' || ticket.status === 'claimed') && 'gradient-border-animated border-transparent'
                             )}
                           >
-                            <div className="flex items-start gap-2 mb-2">
-                              <span
-                                className={cn(
-                                  'w-2 h-2 rounded-full mt-1.5 shrink-0',
-                                  getPriorityColor(ticket.priority)
-                                )}
-                              />
-                              <span className="text-sm font-medium text-foreground line-clamp-2 flex-1">
-                                {ticket.title}
+                            {/* Attributes row - moved to top */}
+                            <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
+                              {/* Type badge */}
+                              <span className={cn(
+                                'flex items-center gap-1 px-1.5 py-0.5 rounded bg-secondary/50',
+                                ticket.type === 'bug' && 'text-error',
+                                ticket.type === 'feature' && 'text-primary',
+                                ticket.type === 'story' && 'text-success',
+                                ticket.type === 'epic' && 'text-chart-5',
+                                ticket.type === 'task' && 'text-muted-foreground',
+                              )}>
+                                <TypeIcon className="w-3.5 h-3.5" />
+                                <span className="capitalize">{ticket.type}</span>
                               </span>
-                              {/* Dependency indicators */}
-                              <div className="flex items-center gap-1 shrink-0">
-                                {hasUnresolvedBlockers && (
-                                  <AlertTriangleIcon className="w-3.5 h-3.5 text-warning" />
-                                )}
-                                {blocksCount > 0 && (
-                                  <div className="flex items-center gap-0.5 text-info">
-                                    <LinkIcon className="w-3 h-3" />
-                                    <span className="text-[10px]">{blocksCount}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                            {ticket.description && (
-                              <p className="text-xs text-muted-foreground line-clamp-2 ml-4">
-                                {ticket.description}
-                              </p>
-                            )}
-                            <div className="flex items-center gap-2 mt-2 ml-4">
-                              <span className="text-[10px] text-muted-foreground uppercase">
-                                {ticket.priority}
+                              {/* Priority badge */}
+                              <span className={cn(
+                                'flex items-center gap-1 px-1.5 py-0.5 rounded',
+                                ticket.priority === 'urgent' && 'bg-priority-urgent/20 text-priority-urgent',
+                                ticket.priority === 'high' && 'bg-priority-high/20 text-priority-high',
+                                ticket.priority === 'medium' && 'bg-priority-medium/20 text-priority-medium',
+                                ticket.priority === 'low' && 'bg-priority-low/20 text-priority-low',
+                              )}>
+                                <span className={cn(
+                                  'w-2 h-2 rounded-full',
+                                  ticket.priority === 'urgent' && 'bg-priority-urgent',
+                                  ticket.priority === 'high' && 'bg-priority-high',
+                                  ticket.priority === 'medium' && 'bg-priority-medium',
+                                  ticket.priority === 'low' && 'bg-priority-low',
+                                )} />
+                                <span className="capitalize">{ticket.priority}</span>
                               </span>
+                              {/* Category */}
                               {ticket.category && (
-                                <span className="text-[10px] text-muted-foreground">
+                                <span className="px-1.5 py-0.5 rounded bg-secondary/50 text-muted-foreground">
                                   {ticket.category}
                                 </span>
                               )}
+                              {/* Dependency indicators */}
+                              {hasUnresolvedBlockers && (
+                                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning/20 text-warning">
+                                  <AlertTriangleIcon className="w-3.5 h-3.5" />
+                                  <span>Blocked</span>
+                                </span>
+                              )}
+                              {blocksCount > 0 && (
+                                <span className="flex items-center gap-1 text-muted-foreground">
+                                  <LinkIcon className="w-3.5 h-3.5" />
+                                  <span>{blocksCount}</span>
+                                </span>
+                              )}
+                            </div>
+                            {/* Title row */}
+                            <div className="flex items-start gap-2 mb-1.5">
+                              <span className="text-sm font-medium text-foreground/90 group-hover:text-foreground line-clamp-2 flex-1 leading-snug">
+                                {ticket.title}
+                              </span>
+                            </div>
+                            {/* Meta row */}
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                              {/* Due date */}
+                              {ticket.dueDate && (
+                                <span className="flex items-center gap-1">
+                                  <CalendarIcon className="w-3.5 h-3.5" />
+                                  {new Date(ticket.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                </span>
+                              )}
+                              {/* Checklist */}
+                              {checklistTotal > 0 && (
+                                <span className={cn(
+                                  'flex items-center gap-1',
+                                  checklistDone === checklistTotal && 'text-success'
+                                )}>
+                                  <CheckCircleIcon className="w-3.5 h-3.5" />
+                                  {checklistDone}/{checklistTotal}
+                                </span>
+                              )}
+                              {/* Assigned */}
                               {ticket.claimedBy && (
-                                <span className="text-[10px] text-info">
-                                  Assigned
+                                <span className="flex items-center gap-1 text-primary/70">
+                                  <UserIcon className="w-3.5 h-3.5" />
                                 </span>
                               )}
                             </div>

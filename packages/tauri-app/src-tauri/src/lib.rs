@@ -5,7 +5,7 @@ mod websocket;
 use websocket::WebSocketHub;
 use std::time::Duration;
 
-const WEBSOCKET_PORT: u16 = 4000;
+const WEBSOCKET_PORT: u16 = 61987;
 const CLEANUP_INTERVAL_SECS: u64 = 10;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

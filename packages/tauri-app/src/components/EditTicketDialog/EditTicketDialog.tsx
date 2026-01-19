@@ -3,6 +3,7 @@ import type { Ticket, TicketStatus, TicketPriority } from '@awesome-claude/share
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -71,6 +72,9 @@ export function EditTicketDialog({ ticket, open, onOpenChange, onSave }: EditTic
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>Edit Ticket</DialogTitle>
+          <DialogDescription>
+            Modify the ticket details below.
+          </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">

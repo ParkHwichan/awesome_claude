@@ -43,7 +43,7 @@ function toTicket(row: typeof tickets.$inferSelect): Ticket {
 }
 
 // Create ticket
-export function createTicket(data: CreateTicketInput): Ticket {
+export async function createTicket(data: CreateTicketInput): Promise<Ticket> {
   const db = getDb();
   const now = new Date().toISOString();
   const id = uuidv4();
@@ -73,35 +73,48 @@ export function createTicket(data: CreateTicketInput): Ticket {
     metadata: data.metadata ? JSON.stringify(data.metadata) : null,
   };
 
-  db.insert(tickets).values(newTicket).run();
+  await db.insert(tickets).values(newTicket).run();
 
   // Update blocks on blocking tickets
   if (data.blockedBy && data.blockedBy.length > 0) {
-    updateBlocksReferences(data.blockedBy, id, 'add');
+    await updateBlocksReferences(data.blockedBy, id, 'add');
   }
 
   return toTicket(newTicket as typeof tickets.$inferSelect);
 }
 
-// Get ticket by ID
-export function getTicket(id: string): Ticket | null {
+// Get ticket by ID (supports partial ID matching like git)
+export async function getTicket(id: string, projectId?: string): Promise<Ticket | null> {
   const db = getDb();
-  const row = db.select().from(tickets).where(eq(tickets.id, id)).get();
-  return row ? toTicket(row) : null;
+
+  // Try exact match first
+  let row = await db.select().from(tickets).where(eq(tickets.id, id)).get();
+  if (row) return toTicket(row);
+
+  // Try partial match (for short IDs like "380187f7")
+  if (id.length >= 6 && id.length < 36) {
+    const query = projectId
+      ? db.select().from(tickets).where(eq(tickets.projectId, projectId))
+      : db.select().from(tickets);
+    const rows = await query.all();
+    const matches = rows.filter(r => r.id.startsWith(id));
+    if (matches.length === 1) return toTicket(matches[0]);
+    if (matches.length > 1) {
+      console.error(`Ambiguous short ID: ${id} matches ${matches.length} tickets`);
+    }
+  }
+
+  return null;
 }
 
 // List tickets
-export function listTickets(
+export async function listTickets(
   projectId: string,
   options?: { status?: TicketStatus; priority?: string; claimedBy?: string; includeArchived?: boolean }
-): Ticket[] {
+): Promise<Ticket[]> {
   const db = getDb();
 
-  let query = db.select().from(tickets).where(eq(tickets.projectId, projectId));
-
-  // Note: Drizzle doesn't easily support dynamic where clauses,
-  // so we filter in memory for optional conditions
-  const rows = query.all();
+  const rows = await db.select().from(tickets).where(eq(tickets.projectId, projectId)).all();
 
   let filtered = rows;
 
@@ -133,9 +146,9 @@ export function listTickets(
 }
 
 // List available tickets (pending status)
-export function listAvailableTickets(projectId: string): Ticket[] {
+export async function listAvailableTickets(projectId: string): Promise<Ticket[]> {
   const db = getDb();
-  const rows = db.select().from(tickets)
+  const rows = await db.select().from(tickets)
     .where(and(eq(tickets.projectId, projectId), eq(tickets.status, 'pending')))
     .all();
 
@@ -151,8 +164,8 @@ export function listAvailableTickets(projectId: string): Ticket[] {
 }
 
 // Update ticket
-export function updateTicket(id: string, data: UpdateTicketInput): Ticket | null {
-  const existing = getTicket(id);
+export async function updateTicket(id: string, data: UpdateTicketInput): Promise<Ticket | null> {
+  const existing = await getTicket(id);
   if (!existing) return null;
 
   const db = getDb();
@@ -164,12 +177,12 @@ export function updateTicket(id: string, data: UpdateTicketInput): Ticket | null
 
   const removed = oldBlockedBy.filter(b => !newBlockedBy.includes(b));
   if (removed.length > 0) {
-    updateBlocksReferences(removed, id, 'remove');
+    await updateBlocksReferences(removed, id, 'remove');
   }
 
   const added = newBlockedBy.filter(b => !oldBlockedBy.includes(b));
   if (added.length > 0) {
-    updateBlocksReferences(added, id, 'add');
+    await updateBlocksReferences(added, id, 'add');
   }
 
   const updateData: Partial<typeof tickets.$inferInsert> = {
@@ -188,108 +201,113 @@ export function updateTicket(id: string, data: UpdateTicketInput): Ticket | null
   if (data.category !== undefined) updateData.category = data.category;
   if (data.metadata !== undefined) updateData.metadata = data.metadata ? JSON.stringify(data.metadata) : null;
 
-  db.update(tickets).set(updateData).where(eq(tickets.id, id)).run();
+  await db.update(tickets).set(updateData).where(eq(tickets.id, id)).run();
 
   return getTicket(id);
 }
 
 // Claim ticket
-export function claimTicket(ticketId: string, sessionId: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function claimTicket(ticketId: string, sessionId: string, projectId?: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId, projectId);
   if (!existing || existing.status !== 'pending') return null;
 
   const db = getDb();
   const now = new Date().toISOString();
+  const fullId = existing.id; // Use full ID from found ticket
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ status: 'claimed', claimedBy: sessionId, claimedAt: now, updatedAt: now })
-    .where(eq(tickets.id, ticketId))
+    .where(eq(tickets.id, fullId))
     .run();
 
-  return getTicket(ticketId);
+  return getTicket(fullId);
 }
 
 // Release ticket
-export function releaseTicket(ticketId: string, sessionId: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function releaseTicket(ticketId: string, sessionId: string, projectId?: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId, projectId);
   if (!existing || existing.claimedBy !== sessionId) return null;
 
   const db = getDb();
   const now = new Date().toISOString();
+  const fullId = existing.id;
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: now })
-    .where(eq(tickets.id, ticketId))
+    .where(eq(tickets.id, fullId))
     .run();
 
-  return getTicket(ticketId);
+  return getTicket(fullId);
 }
 
 // Start ticket
-export function startTicket(ticketId: string, sessionId: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function startTicket(ticketId: string, sessionId: string, projectId?: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId, projectId);
   if (!existing || existing.claimedBy !== sessionId || existing.status !== 'claimed') return null;
 
   const db = getDb();
   const now = new Date().toISOString();
+  const fullId = existing.id;
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ status: 'in_progress', updatedAt: now })
-    .where(eq(tickets.id, ticketId))
+    .where(eq(tickets.id, fullId))
     .run();
 
-  return getTicket(ticketId);
+  return getTicket(fullId);
 }
 
 // Complete ticket
-export function completeTicket(ticketId: string, sessionId: string, result: TicketResult): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function completeTicket(ticketId: string, sessionId: string, result: TicketResult, projectId?: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId, projectId);
   if (!existing || existing.claimedBy !== sessionId) return null;
 
   const db = getDb();
   const now = new Date().toISOString();
+  const fullId = existing.id;
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ status: 'completed', completedAt: now, updatedAt: now, result: JSON.stringify(result) })
-    .where(eq(tickets.id, ticketId))
+    .where(eq(tickets.id, fullId))
     .run();
 
   // Archive old completed tickets
-  archiveOldCompletedTickets(existing.projectId);
+  await archiveOldCompletedTickets(existing.projectId);
 
-  return getTicket(ticketId);
+  return getTicket(fullId);
 }
 
 // Fail ticket
-export function failTicket(ticketId: string, sessionId: string, error?: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function failTicket(ticketId: string, sessionId: string, error?: string, projectId?: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId, projectId);
   if (!existing || existing.claimedBy !== sessionId) return null;
 
   const db = getDb();
   const now = new Date().toISOString();
   const result: TicketResult = { success: false, error };
+  const fullId = existing.id;
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ status: 'failed', completedAt: now, updatedAt: now, result: JSON.stringify(result) })
-    .where(eq(tickets.id, ticketId))
+    .where(eq(tickets.id, fullId))
     .run();
 
-  return getTicket(ticketId);
+  return getTicket(fullId);
 }
 
 // Delete ticket
-export function deleteTicket(id: string): boolean {
-  const existing = getTicket(id);
+export async function deleteTicket(id: string, projectId?: string): Promise<boolean> {
+  const existing = await getTicket(id, projectId);
   if (!existing) return false;
 
   const db = getDb();
-  db.delete(tickets).where(eq(tickets.id, id)).run();
+  await db.delete(tickets).where(eq(tickets.id, existing.id)).run();
   return true;
 }
 
 // Force release ticket (admin/recovery operation - ignores session check)
-export function forceReleaseTicket(ticketId: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function forceReleaseTicket(ticketId: string, projectId?: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId, projectId);
   if (!existing) return null;
 
   // Only release if it's claimed or in_progress
@@ -299,38 +317,40 @@ export function forceReleaseTicket(ticketId: string): Ticket | null {
 
   const db = getDb();
   const now = new Date().toISOString();
+  const fullId = existing.id;
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: now })
-    .where(eq(tickets.id, ticketId))
+    .where(eq(tickets.id, fullId))
     .run();
 
-  return getTicket(ticketId);
+  return getTicket(fullId);
 }
 
 // Force complete ticket (admin/recovery operation - ignores session check)
-export function forceCompleteTicket(ticketId: string, result: TicketResult): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function forceCompleteTicket(ticketId: string, result: TicketResult, projectId?: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId, projectId);
   if (!existing) return null;
 
   const db = getDb();
   const now = new Date().toISOString();
+  const fullId = existing.id;
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ status: 'completed', completedAt: now, updatedAt: now, result: JSON.stringify(result) })
-    .where(eq(tickets.id, ticketId))
+    .where(eq(tickets.id, fullId))
     .run();
 
   // Archive old completed tickets
-  archiveOldCompletedTickets(existing.projectId);
+  await archiveOldCompletedTickets(existing.projectId);
 
-  return getTicket(ticketId);
+  return getTicket(fullId);
 }
 
 // Get ticket progress
-export function getTicketProgress(projectId: string): TicketProgress {
+export async function getTicketProgress(projectId: string): Promise<TicketProgress> {
   const db = getDb();
-  const rows = db.select({ status: tickets.status, count: sql<number>`count(*)` })
+  const rows = await db.select({ status: tickets.status, count: sql<number>`count(*)` })
     .from(tickets)
     .where(eq(tickets.projectId, projectId))
     .groupBy(tickets.status)
@@ -369,8 +389,8 @@ export function getTicketProgress(projectId: string): TicketProgress {
 }
 
 // Checklist operations
-export function addChecklistItem(ticketId: string, text: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function addChecklistItem(ticketId: string, text: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing) return null;
 
   const db = getDb();
@@ -378,7 +398,7 @@ export function addChecklistItem(ticketId: string, text: string): Ticket | null 
   const newItem: ChecklistItem = { id: uuidv4(), text, completed: false };
   const checklist = [...(existing.checklist || []), newItem];
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ checklist: JSON.stringify(checklist), updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -386,12 +406,12 @@ export function addChecklistItem(ticketId: string, text: string): Ticket | null 
   return getTicket(ticketId);
 }
 
-export function updateChecklistItem(
+export async function updateChecklistItem(
   ticketId: string,
   itemId: string,
   updates: { text?: string; completed?: boolean }
-): Ticket | null {
-  const existing = getTicket(ticketId);
+): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing || !existing.checklist) return null;
 
   const db = getDb();
@@ -408,7 +428,7 @@ export function updateChecklistItem(
     return item;
   });
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ checklist: JSON.stringify(checklist), updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -416,15 +436,15 @@ export function updateChecklistItem(
   return getTicket(ticketId);
 }
 
-export function removeChecklistItem(ticketId: string, itemId: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function removeChecklistItem(ticketId: string, itemId: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing || !existing.checklist) return null;
 
   const db = getDb();
   const now = new Date().toISOString();
   const checklist = existing.checklist.filter(item => item.id !== itemId);
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ checklist: checklist.length > 0 ? JSON.stringify(checklist) : null, updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -433,12 +453,12 @@ export function removeChecklistItem(ticketId: string, itemId: string): Ticket | 
 }
 
 // Helper to update blocks references
-function updateBlocksReferences(blockingTicketIds: string[], blockedTicketId: string, action: 'add' | 'remove'): void {
+async function updateBlocksReferences(blockingTicketIds: string[], blockedTicketId: string, action: 'add' | 'remove'): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
 
   for (const blockingId of blockingTicketIds) {
-    const blocking = db.select({ blocks: tickets.blocks }).from(tickets).where(eq(tickets.id, blockingId)).get();
+    const blocking = await db.select({ blocks: tickets.blocks }).from(tickets).where(eq(tickets.id, blockingId)).get();
     if (!blocking) continue;
 
     let blocks: string[] = blocking.blocks ? JSON.parse(blocking.blocks) : [];
@@ -449,7 +469,7 @@ function updateBlocksReferences(blockingTicketIds: string[], blockedTicketId: st
       blocks = blocks.filter(id => id !== blockedTicketId);
     }
 
-    db.update(tickets)
+    await db.update(tickets)
       .set({ blocks: blocks.length > 0 ? JSON.stringify(blocks) : null, updatedAt: now })
       .where(eq(tickets.id, blockingId))
       .run();
@@ -457,14 +477,14 @@ function updateBlocksReferences(blockingTicketIds: string[], blockedTicketId: st
 }
 
 // Comment operations
-export function addComment(
+export async function addComment(
   ticketId: string,
   authorId: string,
   content: string,
   type: CommentType = 'comment',
   authorName?: string
-): Ticket | null {
-  const existing = getTicket(ticketId);
+): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing) return null;
 
   const db = getDb();
@@ -479,7 +499,7 @@ export function addComment(
   };
   const comments = [...(existing.comments || []), newComment];
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ comments: JSON.stringify(comments), updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -487,12 +507,12 @@ export function addComment(
   return getTicket(ticketId);
 }
 
-export function updateComment(
+export async function updateComment(
   ticketId: string,
   commentId: string,
   content: string
-): Ticket | null {
-  const existing = getTicket(ticketId);
+): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing || !existing.comments) return null;
 
   const db = getDb();
@@ -504,7 +524,7 @@ export function updateComment(
     return comment;
   });
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ comments: JSON.stringify(comments), updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -512,15 +532,15 @@ export function updateComment(
   return getTicket(ticketId);
 }
 
-export function deleteComment(ticketId: string, commentId: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function deleteComment(ticketId: string, commentId: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing || !existing.comments) return null;
 
   const db = getDb();
   const now = new Date().toISOString();
   const comments = existing.comments.filter(comment => comment.id !== commentId);
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ comments: comments.length > 0 ? JSON.stringify(comments) : null, updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -529,8 +549,8 @@ export function deleteComment(ticketId: string, commentId: string): Ticket | nul
 }
 
 // Tag operations
-export function addTag(ticketId: string, name: string, color?: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function addTag(ticketId: string, name: string, color?: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing) return null;
 
   // Check if tag with same name already exists
@@ -547,7 +567,7 @@ export function addTag(ticketId: string, name: string, color?: string): Ticket |
   };
   const tags = [...(existing.tags || []), newTag];
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ tags: JSON.stringify(tags), updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -555,15 +575,15 @@ export function addTag(ticketId: string, name: string, color?: string): Ticket |
   return getTicket(ticketId);
 }
 
-export function removeTag(ticketId: string, tagId: string): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function removeTag(ticketId: string, tagId: string): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing || !existing.tags) return null;
 
   const db = getDb();
   const now = new Date().toISOString();
   const tags = existing.tags.filter(tag => tag.id !== tagId);
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ tags: tags.length > 0 ? JSON.stringify(tags) : null, updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -571,12 +591,12 @@ export function removeTag(ticketId: string, tagId: string): Ticket | null {
   return getTicket(ticketId);
 }
 
-export function updateTag(
+export async function updateTag(
   ticketId: string,
   tagId: string,
   updates: { name?: string; color?: string }
-): Ticket | null {
-  const existing = getTicket(ticketId);
+): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing || !existing.tags) return null;
 
   const db = getDb();
@@ -592,7 +612,7 @@ export function updateTag(
     return tag;
   });
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ tags: JSON.stringify(tags), updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -601,14 +621,14 @@ export function updateTag(
 }
 
 // Set category
-export function setCategory(ticketId: string, category: Ticket['category'] | null): Ticket | null {
-  const existing = getTicket(ticketId);
+export async function setCategory(ticketId: string, category: Ticket['category'] | null): Promise<Ticket | null> {
+  const existing = await getTicket(ticketId);
   if (!existing) return null;
 
   const db = getDb();
   const now = new Date().toISOString();
 
-  db.update(tickets)
+  await db.update(tickets)
     .set({ category: category ?? null, updatedAt: now })
     .where(eq(tickets.id, ticketId))
     .run();
@@ -619,12 +639,12 @@ export function setCategory(ticketId: string, category: Ticket['category'] | nul
 // Archive old completed tickets, keeping only the most recent N
 const MAX_COMPLETED_TICKETS = 10;
 
-export function archiveOldCompletedTickets(projectId: string): number {
+export async function archiveOldCompletedTickets(projectId: string): Promise<number> {
   const db = getDb();
   const now = new Date().toISOString();
 
   // Get all completed tickets for this project, sorted by completedAt desc
-  const completed = db.select()
+  const completed = await db.select()
     .from(tickets)
     .where(and(eq(tickets.projectId, projectId), eq(tickets.status, 'completed')))
     .all();
@@ -636,7 +656,7 @@ export function archiveOldCompletedTickets(projectId: string): number {
   const toArchive = completed.slice(MAX_COMPLETED_TICKETS);
 
   for (const ticket of toArchive) {
-    db.update(tickets)
+    await db.update(tickets)
       .set({ status: 'archived', updatedAt: now })
       .where(eq(tickets.id, ticket.id))
       .run();

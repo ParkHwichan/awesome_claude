@@ -22,7 +22,7 @@ export function registerTodoTools(server: McpServer): void {
       activeForm: z.string().describe('Active form of the todo (present continuous)'),
     },
     async ({ workflowId, content, activeForm }) => {
-      const todo = store.createTodo({
+      const todo = await store.createTodo({
         workflowId,
         content,
         activeForm,
@@ -49,7 +49,7 @@ export function registerTodoTools(server: McpServer): void {
       id: z.string().describe('Todo ID'),
     },
     async ({ id }) => {
-      const todo = store.getTodo(id);
+      const todo = await store.getTodo(id);
       if (!todo) {
         return {
           content: [{ type: 'text', text: `Todo not found: ${id}` }],
@@ -71,8 +71,8 @@ export function registerTodoTools(server: McpServer): void {
       workflowId: z.string().describe('Workflow ID'),
     },
     async ({ workflowId }) => {
-      const todos = store.listTodos(workflowId);
-      const progress = store.getTodoProgress(workflowId);
+      const todos = await store.listTodos(workflowId);
+      const progress = await store.getTodoProgress(workflowId);
       return {
         content: [
           {
@@ -96,7 +96,7 @@ export function registerTodoTools(server: McpServer): void {
       linkedTaskId: z.string().optional().describe('Link to a task'),
     },
     async ({ id, content, activeForm, status, linkedTaskId }) => {
-      const previousTodo = store.getTodo(id);
+      const previousTodo = await store.getTodo(id);
       if (!previousTodo) {
         return {
           content: [{ type: 'text', text: `Todo not found: ${id}` }],
@@ -104,7 +104,7 @@ export function registerTodoTools(server: McpServer): void {
         };
       }
 
-      const todo = store.updateTodo(id, { content, activeForm, status, linkedTaskId });
+      const todo = await store.updateTodo(id, { content, activeForm, status, linkedTaskId });
       if (!todo) {
         return {
           content: [{ type: 'text', text: `Failed to update todo: ${id}` }],
@@ -156,8 +156,8 @@ export function registerTodoTools(server: McpServer): void {
         .describe('Array of todos'),
     },
     async ({ workflowId, todos }) => {
-      const updatedTodos = store.batchUpdateTodos({ workflowId, todos });
-      const progress = store.getTodoProgress(workflowId);
+      const updatedTodos = await store.batchUpdateTodos({ workflowId, todos });
+      const progress = await store.getTodoProgress(workflowId);
 
       const event: TodoBatchUpdatedEvent = {
         type: 'todo:batch_updated',
@@ -189,7 +189,7 @@ export function registerTodoTools(server: McpServer): void {
       id: z.string().describe('Todo ID'),
     },
     async ({ id }) => {
-      const todo = store.getTodo(id);
+      const todo = await store.getTodo(id);
       if (!todo) {
         return {
           content: [{ type: 'text', text: `Todo not found: ${id}` }],
@@ -197,7 +197,7 @@ export function registerTodoTools(server: McpServer): void {
         };
       }
 
-      const deleted = store.deleteTodo(id);
+      const deleted = await store.deleteTodo(id);
       if (!deleted) {
         return {
           content: [{ type: 'text', text: `Failed to delete todo: ${id}` }],
@@ -226,7 +226,7 @@ export function registerTodoTools(server: McpServer): void {
       workflowId: z.string().describe('Workflow ID'),
     },
     async ({ workflowId }) => {
-      const progress = store.getTodoProgress(workflowId);
+      const progress = await store.getTodoProgress(workflowId);
       return {
         content: [{ type: 'text', text: JSON.stringify(progress, null, 2) }],
       };

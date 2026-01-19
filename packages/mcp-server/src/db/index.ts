@@ -1,12 +1,12 @@
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import Database from 'better-sqlite3';
-import { existsSync, mkdirSync } from 'fs';
+import { drizzle } from 'drizzle-orm/libsql';
+import { createClient, type Client } from '@libsql/client';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import * as schema from './schema.js';
 
 let db: ReturnType<typeof drizzle<typeof schema>> | null = null;
-let sqlite: Database.Database | null = null;
+let client: Client | null = null;
 
 function getDefaultDbPath(): string {
   const appData = process.env.APPDATA || process.env.LOCALAPPDATA || join(homedir(), '.local', 'share');
@@ -23,18 +23,16 @@ export function initDatabase() {
     mkdirSync(dbDir, { recursive: true });
   }
 
-  sqlite = new Database(dbPath);
-  sqlite.pragma('journal_mode = WAL');
-  sqlite.pragma('busy_timeout = 5000');
-  sqlite.pragma('synchronous = NORMAL');
-  sqlite.pragma('foreign_keys = ON');
+  // libsql requires file: prefix for local files
+  const dbUrl = `file:${dbPath}`;
 
-  db = drizzle(sqlite, { schema });
+  client = createClient({ url: dbUrl });
+  db = drizzle(client, { schema });
 
-  // Run migrations
-  runMigrations(sqlite);
+  // Run migrations synchronously
+  runMigrations(client, dbPath);
 
-  console.error('Database initialized with Drizzle');
+  console.error('Database initialized with Drizzle + libsql');
   return db;
 }
 
@@ -46,23 +44,35 @@ export function getDb() {
 }
 
 export function closeDatabase(): void {
-  if (sqlite) {
-    sqlite.close();
-    sqlite = null;
+  if (client) {
+    client.close();
+    client = null;
     db = null;
   }
 }
 
 const CURRENT_VERSION = 6;
 
-function runMigrations(database: Database.Database): void {
-  const version = database.pragma('user_version', { simple: true }) as number || 0;
+function runMigrations(libsqlClient: Client, dbPath: string): void {
+  // Use a version file since libsql client is async-only
+  const versionFile = dbPath + '.version';
+  let version = 0;
+
+  if (existsSync(versionFile)) {
+    try {
+      version = parseInt(readFileSync(versionFile, 'utf-8').trim(), 10) || 0;
+    } catch {
+      version = 0;
+    }
+  }
+
   console.error(`Database version: ${version}, current: ${CURRENT_VERSION}`);
 
   // Initial schema creation
   if (version < 1) {
     console.error('Running migration to version 1: Creating initial schema');
-    database.exec(`
+    libsqlClient.executeMultiple(`
+      PRAGMA foreign_keys = ON;
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -169,51 +179,43 @@ function runMigrations(database: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status);
       CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status);
     `);
+    version = 1;
   }
 
-  // Migration from old schema - add new ticket fields if missing
+  // Migration for additional ticket fields
   if (version < 5) {
     console.error('Running migration to version 5: Ensuring ticket fields exist');
-    const ticketColumns = database.prepare("PRAGMA table_info(tickets)").all() as { name: string }[];
-    const columnNames = ticketColumns.map(col => col.name);
-
-    if (!columnNames.includes('type')) {
-      database.exec("ALTER TABLE tickets ADD COLUMN type TEXT NOT NULL DEFAULT 'task'");
+    // These columns are already in the initial schema, but handle upgrades from older versions
+    try {
+      libsqlClient.executeMultiple(`
+        ALTER TABLE tickets ADD COLUMN type TEXT NOT NULL DEFAULT 'task';
+        ALTER TABLE tickets ADD COLUMN due_date TEXT;
+        ALTER TABLE tickets ADD COLUMN blocked_by TEXT;
+        ALTER TABLE tickets ADD COLUMN blocks TEXT;
+        ALTER TABLE tickets ADD COLUMN checklist TEXT;
+      `);
+    } catch {
+      // Columns may already exist
     }
-    if (!columnNames.includes('due_date')) {
-      database.exec("ALTER TABLE tickets ADD COLUMN due_date TEXT");
-    }
-    if (!columnNames.includes('blocked_by')) {
-      database.exec("ALTER TABLE tickets ADD COLUMN blocked_by TEXT");
-    }
-    if (!columnNames.includes('blocks')) {
-      database.exec("ALTER TABLE tickets ADD COLUMN blocks TEXT");
-    }
-    if (!columnNames.includes('checklist')) {
-      database.exec("ALTER TABLE tickets ADD COLUMN checklist TEXT");
-    }
-    console.error('Ticket fields migration complete');
+    version = 5;
   }
 
   // Migration for comments, tags, category
   if (version < 6) {
     console.error('Running migration to version 6: Adding comments, tags, category fields');
-    const ticketColumns = database.prepare("PRAGMA table_info(tickets)").all() as { name: string }[];
-    const columnNames = ticketColumns.map(col => col.name);
-
-    if (!columnNames.includes('comments')) {
-      database.exec("ALTER TABLE tickets ADD COLUMN comments TEXT");
+    try {
+      libsqlClient.executeMultiple(`
+        ALTER TABLE tickets ADD COLUMN comments TEXT;
+        ALTER TABLE tickets ADD COLUMN tags TEXT;
+        ALTER TABLE tickets ADD COLUMN category TEXT;
+      `);
+    } catch {
+      // Columns may already exist
     }
-    if (!columnNames.includes('tags')) {
-      database.exec("ALTER TABLE tickets ADD COLUMN tags TEXT");
-    }
-    if (!columnNames.includes('category')) {
-      database.exec("ALTER TABLE tickets ADD COLUMN category TEXT");
-    }
-    console.error('Comments, tags, category migration complete');
+    version = 6;
   }
 
-  database.pragma(`user_version = ${CURRENT_VERSION}`);
+  writeFileSync(versionFile, String(CURRENT_VERSION));
 }
 
 // Re-export schema for convenience

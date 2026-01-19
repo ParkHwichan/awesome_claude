@@ -27,14 +27,14 @@ export function registerTicketTools(server: McpServer): void {
   // Create ticket
   server.tool(
     'ticket_create',
-    'Create ticket. Returns ID for use in blockedBy.',
+    'Create ticket. Returns ID. IMPORTANT: Use blockedBy param for dependencies, NOT description text.',
     {
       title: z.string(),
-      description: z.string().describe('Implementation plan (min 50 chars)'),
+      description: z.string().describe('Implementation plan (min 50 chars). Do NOT put dependencies here.'),
       type: TYPE_ENUM.optional(),
       priority: PRIORITY_ENUM.optional(),
       category: CATEGORY_ENUM.optional(),
-      blockedBy: z.array(z.string()).optional().describe('Blocking ticket IDs'),
+      blockedBy: z.array(z.string()).optional().describe('Array of ticket IDs that block this ticket. REQUIRED for dependent tickets.'),
     },
     async ({ title, description, type, priority, category, blockedBy }) => {
       const sessionId = getCurrentSessionId();
@@ -48,7 +48,7 @@ export function registerTicketTools(server: McpServer): void {
         return { content: [{ type: 'text', text: 'Error: Description must be 50+ chars' }], isError: true };
       }
 
-      const ticket = ticketStore.createTicket({
+      const ticket = await ticketStore.createTicket({
         projectId, title, description, type, priority, category, blockedBy, createdBy: sessionId,
       });
 
@@ -63,10 +63,11 @@ export function registerTicketTools(server: McpServer): void {
   // Get ticket details
   server.tool(
     'ticket_get',
-    'Get full ticket details by ID',
-    { id: z.string() },
+    'Get full ticket details by ID (supports short IDs)',
+    { id: z.string().describe('Full or short (8+ char) ticket ID') },
     async ({ id }) => {
-      const ticket = ticketStore.getTicket(id);
+      const projectId = getCurrentProjectId();
+      const ticket = await ticketStore.getTicket(id, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }
@@ -102,7 +103,7 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
         return { content: [{ type: 'text', text: 'No project' }], isError: true };
       }
 
-      let tickets = ticketStore.listTickets(projectId, { status, priority });
+      let tickets = await ticketStore.listTickets(projectId, { status, priority });
       if (!all && !status) {
         tickets = tickets.filter(t => t.status !== 'completed' && t.status !== 'failed');
       }
@@ -111,7 +112,7 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
         `[${t.priority[0].toUpperCase()}] ${t.id.slice(0,8)} | ${t.status.padEnd(11)} | ${t.title.slice(0,40)}`
       );
 
-      const progress = ticketStore.getTicketProgress(projectId);
+      const progress = await ticketStore.getTicketProgress(projectId);
       return {
         content: [{
           type: 'text',
@@ -132,7 +133,7 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
         return { content: [{ type: 'text', text: 'No project' }], isError: true };
       }
 
-      const tickets = ticketStore.listAvailableTickets(projectId);
+      const tickets = await ticketStore.listAvailableTickets(projectId);
       const lines = tickets.map(t =>
         `[${t.priority[0].toUpperCase()}] ${t.id.slice(0,8)} | ${t.title.slice(0,50)}${t.blockedBy?.length ? ' [BLOCKED]' : ''}`
       );
@@ -144,20 +145,21 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
   // Claim ticket
   server.tool(
     'ticket_claim',
-    'Claim a ticket to work on',
-    { ticketId: z.string() },
+    'Claim a ticket to work on (supports short IDs)',
+    { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
     async ({ ticketId }) => {
       const sessionId = getCurrentSessionId();
+      const projectId = getCurrentProjectId();
       if (!sessionId) {
         return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
-      const ticket = ticketStore.claimTicket(ticketId, sessionId);
+      const ticket = await ticketStore.claimTicket(ticketId, sessionId, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot claim (not found or unavailable)' }], isError: true };
       }
 
-      sessionStore.setSessionCurrentTicket(sessionId, ticketId);
+      sessionStore.setSessionCurrentTicket(sessionId, ticket.id);
       broadcaster.broadcastToProject(ticket.projectId, {
         type: 'ticket:claimed', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
       } as TicketClaimedEvent);
@@ -170,14 +172,15 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
   server.tool(
     'ticket_release',
     'Release claimed ticket back to pool',
-    { ticketId: z.string() },
+    { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
     async ({ ticketId }) => {
       const sessionId = getCurrentSessionId();
+      const projectId = getCurrentProjectId();
       if (!sessionId) {
         return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
-      const ticket = ticketStore.releaseTicket(ticketId, sessionId);
+      const ticket = await ticketStore.releaseTicket(ticketId, sessionId, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot release' }], isError: true };
       }
@@ -195,14 +198,15 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
   server.tool(
     'ticket_start',
     'Mark claimed ticket as in_progress',
-    { ticketId: z.string() },
+    { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
     async ({ ticketId }) => {
       const sessionId = getCurrentSessionId();
+      const projectId = getCurrentProjectId();
       if (!sessionId) {
         return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
-      const ticket = ticketStore.startTicket(ticketId, sessionId);
+      const ticket = await ticketStore.startTicket(ticketId, sessionId, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot start' }], isError: true };
       }
@@ -229,7 +233,7 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
       blockedBy: z.array(z.string()).optional(),
     },
     async ({ ticketId, title, description, type, priority, category, blockedBy }) => {
-      const ticket = ticketStore.updateTicket(ticketId, { title, description, type, priority, category, blockedBy });
+      const ticket = await ticketStore.updateTicket(ticketId, { title, description, type, priority, category, blockedBy });
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }
@@ -247,16 +251,17 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     'ticket_complete',
     'Mark ticket as completed',
     {
-      ticketId: z.string(),
+      ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
       summary: z.string().optional(),
     },
     async ({ ticketId, summary }) => {
       const sessionId = getCurrentSessionId();
+      const projectId = getCurrentProjectId();
       if (!sessionId) {
         return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
-      const ticket = ticketStore.completeTicket(ticketId, sessionId, { success: true, summary });
+      const ticket = await ticketStore.completeTicket(ticketId, sessionId, { success: true, summary }, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot complete' }], isError: true };
       }
@@ -277,16 +282,17 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     'ticket_fail',
     'Mark ticket as failed',
     {
-      ticketId: z.string(),
+      ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
       error: z.string().optional(),
     },
     async ({ ticketId, error }) => {
       const sessionId = getCurrentSessionId();
+      const projectId = getCurrentProjectId();
       if (!sessionId) {
         return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
-      const ticket = ticketStore.failTicket(ticketId, sessionId, error);
+      const ticket = await ticketStore.failTicket(ticketId, sessionId, error, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot fail' }], isError: true };
       }
@@ -306,16 +312,17 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
   server.tool(
     'ticket_delete',
     'Delete a ticket',
-    { ticketId: z.string() },
+    { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
     async ({ ticketId }) => {
-      const ticket = ticketStore.getTicket(ticketId);
+      const projectId = getCurrentProjectId();
+      const ticket = await ticketStore.getTicket(ticketId, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }
 
-      ticketStore.deleteTicket(ticketId);
+      await ticketStore.deleteTicket(ticket.id);
       broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:deleted', timestamp: new Date().toISOString(), payload: { id: ticketId, projectId: ticket.projectId },
+        type: 'ticket:deleted', timestamp: new Date().toISOString(), payload: { id: ticket.id, projectId: ticket.projectId },
       } as TicketDeletedEvent);
 
       return { content: [{ type: 'text', text: 'Deleted' }] };
@@ -327,20 +334,26 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     'ticket_add_comment',
     'Add comment to ticket',
     {
-      ticketId: z.string(),
+      ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
       content: z.string(),
       type: z.enum(['comment', 'progress', 'system']).optional(),
     },
     async ({ ticketId, content, type }) => {
       const sessionId = getCurrentSessionId();
+      const projectId = getCurrentProjectId();
       if (!sessionId) {
         return { content: [{ type: 'text', text: 'No session' }], isError: true };
       }
 
-      const session = sessionStore.getSession(sessionId);
-      const ticket = ticketStore.addComment(ticketId, sessionId, content, type || 'comment', session?.name);
-      if (!ticket) {
+      const session = await sessionStore.getSession(sessionId);
+      const resolvedTicket = await ticketStore.getTicket(ticketId, projectId || undefined);
+      if (!resolvedTicket) {
         return { content: [{ type: 'text', text: 'Not found' }], isError: true };
+      }
+
+      const ticket = await ticketStore.addComment(resolvedTicket.id, sessionId, content, type || 'comment', session?.name);
+      if (!ticket) {
+        return { content: [{ type: 'text', text: 'Failed to add comment' }], isError: true };
       }
 
       broadcaster.broadcastToProject(ticket.projectId, {
@@ -355,9 +368,10 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
   server.tool(
     'ticket_force_release',
     'Force release stuck ticket (admin)',
-    { ticketId: z.string() },
+    { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
     async ({ ticketId }) => {
-      const ticket = ticketStore.forceReleaseTicket(ticketId);
+      const projectId = getCurrentProjectId();
+      const ticket = await ticketStore.forceReleaseTicket(ticketId, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }
@@ -375,11 +389,12 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     'ticket_force_complete',
     'Force complete stuck ticket (admin)',
     {
-      ticketId: z.string(),
+      ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
       summary: z.string().optional(),
     },
     async ({ ticketId, summary }) => {
-      const ticket = ticketStore.forceCompleteTicket(ticketId, { success: true, summary });
+      const projectId = getCurrentProjectId();
+      const ticket = await ticketStore.forceCompleteTicket(ticketId, { success: true, summary }, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Not found' }], isError: true };
       }

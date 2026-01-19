@@ -32,6 +32,18 @@ interface TicketDetailProps {
   onSelectTicket?: (ticketId: string) => void;
 }
 
+// Helper to find ticket by full or short ID
+function findTicketById(tickets: Ticket[], id: string): Ticket | undefined {
+  // Try exact match first
+  const exact = tickets.find(t => t.id === id);
+  if (exact) return exact;
+  // Try short ID match (starts with)
+  if (id.length >= 8) {
+    return tickets.find(t => t.id.startsWith(id));
+  }
+  return undefined;
+}
+
 export function TicketDetail({ ticket, tickets, sessions, onDelete, onSelectTicket }: TicketDetailProps) {
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -173,53 +185,62 @@ export function TicketDetail({ ticket, tickets, sessions, onDelete, onSelectTick
             </div>
           )}
 
-          {/* Dependencies - Blocked By */}
-          {ticket.blockedBy && ticket.blockedBy.length > 0 && (
-            <div>
-              <div className="flex items-center gap-2 text-xs font-medium text-warning mb-2">
-                <AlertTriangleIcon className="w-3.5 h-3.5" />
-                Blocked By ({ticket.blockedBy.length})
-              </div>
-              <div className="space-y-1.5">
-                {ticket.blockedBy.map((id) => {
-                  const blockerTicket = tickets.find(t => t.id === id);
-                  return (
+          {/* Dependencies - Blocked By (filter out deleted tickets) */}
+          {(() => {
+            const existingBlockers = ticket.blockedBy
+              ?.map(id => findTicketById(tickets, id))
+              .filter((t): t is Ticket => t !== undefined);
+            const unresolvedBlockers = existingBlockers?.filter(
+              t => t.status !== 'completed' && t.status !== 'archived'
+            );
+            if (!existingBlockers || existingBlockers.length === 0) return null;
+            return (
+              <div>
+                <div className="flex items-center gap-2 text-xs font-medium text-warning mb-2">
+                  <AlertTriangleIcon className="w-3.5 h-3.5" />
+                  Blocked By ({unresolvedBlockers?.length || 0} unresolved / {existingBlockers.length} total)
+                </div>
+                <div className="space-y-1.5">
+                  {existingBlockers.map((blockerTicket) => (
                     <DependencyTicketItem
-                      key={id}
-                      ticketId={id}
+                      key={blockerTicket.id}
+                      ticketId={blockerTicket.id}
                       ticket={blockerTicket}
                       variant="blocker"
                       onClick={onSelectTicket}
                     />
-                  );
-                })}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
-          {/* Dependencies - Blocks */}
-          {ticket.blocks && ticket.blocks.length > 0 && (
-            <div>
-              <div className="flex items-center gap-2 text-xs font-medium text-info mb-2">
-                <LinkIcon className="w-3.5 h-3.5" />
-                Blocks ({ticket.blocks.length})
-              </div>
-              <div className="space-y-1.5">
-                {ticket.blocks.map((id) => {
-                  const blockedTicket = tickets.find(t => t.id === id);
-                  return (
+          {/* Dependencies - Blocks (filter out deleted tickets) */}
+          {(() => {
+            const existingBlocked = ticket.blocks
+              ?.map(id => findTicketById(tickets, id))
+              .filter((t): t is Ticket => t !== undefined);
+            if (!existingBlocked || existingBlocked.length === 0) return null;
+            return (
+              <div>
+                <div className="flex items-center gap-2 text-xs font-medium text-info mb-2">
+                  <LinkIcon className="w-3.5 h-3.5" />
+                  Blocks ({existingBlocked.length})
+                </div>
+                <div className="space-y-1.5">
+                  {existingBlocked.map((blockedTicket) => (
                     <DependencyTicketItem
-                      key={id}
-                      ticketId={id}
+                      key={blockedTicket.id}
+                      ticketId={blockedTicket.id}
                       ticket={blockedTicket}
                       variant="blocked"
                       onClick={onSelectTicket}
                     />
-                  );
-                })}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Description */}
           {ticket.description && (

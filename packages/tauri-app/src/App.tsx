@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Header } from './components/Layout';
 import { ProjectSidebar } from './components/ProjectSidebar';
 import { TicketDetail } from './components/TicketDetail';
@@ -6,8 +6,11 @@ import { KanbanBoard } from './components/KanbanBoard';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useProjectStore } from './store/project-store';
 import { useConversationStore } from './store/conversation-store';
-import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { FolderIcon, AlertCircleIcon } from 'lucide-react';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { FolderIcon, AlertCircleIcon, PanelLeftCloseIcon, PanelLeftOpenIcon } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import type {
   ProjectCreatedEvent,
   ProjectUpdatedEvent,
@@ -153,22 +156,58 @@ function App() {
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const selectedTicket = tickets.find((t) => t.id === selectedTicketId);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   return (
     <div className="flex flex-col h-screen">
       <Header isConnected={isConnected} />
       <div className="flex flex-1 overflow-hidden">
-        <ProjectSidebar
-          projects={projects}
-          tickets={tickets}
-          sessions={sessions}
-          selectedProjectId={selectedProjectId}
-          selectedTicketId={selectedTicketId}
-          onSelectProject={setSelectedProjectId}
-          onSelectTicket={setSelectedTicketId}
-          onBackToDashboard={() => setSelectedTicketId(null)}
-        />
-        <main className="flex-1 overflow-hidden bg-background">
+        {/* Sidebar */}
+        <div className={cn(
+          'transition-all duration-200 ease-in-out overflow-hidden',
+          sidebarOpen ? 'w-56' : 'w-0'
+        )}>
+          <div className={cn(
+            'h-full w-56',
+            !sidebarOpen && 'invisible'
+          )}>
+            <ProjectSidebar
+              projects={projects}
+              tickets={tickets}
+              sessions={sessions}
+              selectedProjectId={selectedProjectId}
+              selectedTicketId={selectedTicketId}
+              onSelectProject={setSelectedProjectId}
+              onSelectTicket={setSelectedTicketId}
+              onBackToDashboard={() => setSelectedTicketId(null)}
+            />
+          </div>
+        </div>
+
+        {/* Main content */}
+        <main className="flex-1 overflow-hidden bg-background relative">
+          {/* Sidebar toggle button */}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 left-2 z-10 h-8 w-8"
+                  onClick={() => setSidebarOpen(!sidebarOpen)}
+                >
+                  {sidebarOpen ? (
+                    <PanelLeftCloseIcon className="h-4 w-4" />
+                  ) : (
+                    <PanelLeftOpenIcon className="h-4 w-4" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           {selectedProject ? (
             <KanbanBoard
               tickets={tickets}
@@ -201,7 +240,8 @@ function App() {
 
       {/* Ticket Detail Dialog */}
       <Dialog open={!!selectedTicket} onOpenChange={(open) => !open && setSelectedTicketId(null)}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden p-0 flex flex-col" showCloseButton={false}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden p-0 flex flex-col" showCloseButton={false} aria-describedby={undefined}>
+          <DialogTitle className="sr-only">Ticket Details</DialogTitle>
           {selectedTicket && (
             <TicketDetail
               ticket={selectedTicket}

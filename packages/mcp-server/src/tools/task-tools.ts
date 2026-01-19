@@ -39,7 +39,7 @@ export function registerTaskTools(server: McpServer): void {
       command: z.string().optional().describe('Command for bash operations'),
     },
     async ({ workflowId, parentId, name, description, type, toolName, filePath, command }) => {
-      const task = store.createTask({
+      const task = await store.createTask({
         workflowId,
         parentId,
         name,
@@ -73,7 +73,7 @@ export function registerTaskTools(server: McpServer): void {
       id: z.string().describe('Task ID'),
     },
     async ({ id }) => {
-      const task = store.getTask(id);
+      const task = await store.getTask(id);
       if (!task) {
         return {
           content: [{ type: 'text', text: `Task not found: ${id}` }],
@@ -96,7 +96,7 @@ export function registerTaskTools(server: McpServer): void {
       tree: z.boolean().optional().describe('Return as tree structure'),
     },
     async ({ workflowId, tree }) => {
-      const tasks = tree ? store.getTaskTree(workflowId) : store.listTasks(workflowId);
+      const tasks = tree ? await store.getTaskTree(workflowId) : await store.listTasks(workflowId);
       return {
         content: [{ type: 'text', text: JSON.stringify(tasks, null, 2) }],
       };
@@ -121,7 +121,7 @@ export function registerTaskTools(server: McpServer): void {
       duration: z.number().optional().describe('Task duration in milliseconds'),
     },
     async ({ id, name, description, status, success, output, error, duration }) => {
-      const previousTask = store.getTask(id);
+      const previousTask = await store.getTask(id);
       if (!previousTask) {
         return {
           content: [{ type: 'text', text: `Task not found: ${id}` }],
@@ -139,7 +139,7 @@ export function registerTaskTools(server: McpServer): void {
             }
           : undefined;
 
-      const task = store.updateTask(id, { name, description, status, result });
+      const task = await store.updateTask(id, { name, description, status, result });
       if (!task) {
         return {
           content: [{ type: 'text', text: `Failed to update task: ${id}` }],
@@ -182,7 +182,7 @@ export function registerTaskTools(server: McpServer): void {
       id: z.string().describe('Task ID'),
     },
     async ({ id }) => {
-      const task = store.getTask(id);
+      const task = await store.getTask(id);
       if (!task) {
         return {
           content: [{ type: 'text', text: `Task not found: ${id}` }],
@@ -190,7 +190,7 @@ export function registerTaskTools(server: McpServer): void {
         };
       }
 
-      const deleted = store.deleteTask(id);
+      const deleted = await store.deleteTask(id);
       if (!deleted) {
         return {
           content: [{ type: 'text', text: `Failed to delete task: ${id}` }],

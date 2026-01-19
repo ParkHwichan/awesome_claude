@@ -14,36 +14,30 @@ export function Header({ isConnected }: HeaderProps) {
   const handleClose = () => appWindow.close();
 
   return (
-    <header className="flex items-center h-[52px] bg-card border-b border-border select-none">
+    <header className="flex items-center h-11 bg-background border-b border-border/50 select-none">
       {/* Draggable region - takes up all available space */}
       <div
         data-tauri-drag-region
-        className="flex-1 flex items-center gap-3 h-full px-6"
+        className="flex-1 flex items-center gap-2.5 h-full px-4"
       >
-        <span className="text-base font-semibold text-foreground tracking-tight">
+        <div className="w-5 h-5 rounded-md bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center">
+          <span className="text-[10px] font-bold text-white">A</span>
+        </div>
+        <span className="text-[13px] font-semibold text-foreground/90 tracking-tight">
           Awesome Claude
-        </span>
-        <span className="text-[11px] text-muted-foreground bg-secondary/80 px-2 py-1 rounded-md font-medium">
-          v0.1.0
         </span>
       </div>
 
       {/* Connection status */}
-      <div className={cn(
-        'flex items-center gap-2 px-3 py-1.5 rounded-md mr-2',
-        isConnected ? 'bg-success/10' : 'bg-destructive/10'
-      )}>
+      <div className="flex items-center gap-1.5 mr-3">
         <span
           className={cn(
-            'status-dot-lg',
-            isConnected ? 'bg-success' : 'bg-destructive'
+            'w-2 h-2 rounded-full',
+            isConnected ? 'bg-success' : 'bg-muted-foreground/50'
           )}
         />
-        <span className={cn(
-          'text-sm font-medium',
-          isConnected ? 'text-success' : 'text-destructive'
-        )}>
-          {isConnected ? 'Connected' : 'Disconnected'}
+        <span className="text-xs text-muted-foreground">
+          {isConnected ? 'Live' : 'Offline'}
         </span>
       </div>
 
@@ -51,24 +45,24 @@ export function Header({ isConnected }: HeaderProps) {
       <div className="flex items-center h-full">
         <button
           onClick={handleMinimize}
-          className="w-12 h-full flex items-center justify-center hover:bg-muted/50 transition-colors"
+          className="w-11 h-full flex items-center justify-center hover:bg-accent transition-colors"
           aria-label="Minimize"
         >
-          <MinusIcon className="w-4 h-4 text-muted-foreground" />
+          <MinusIcon className="w-3.5 h-3.5 text-muted-foreground" />
         </button>
         <button
           onClick={handleMaximize}
-          className="w-12 h-full flex items-center justify-center hover:bg-muted/50 transition-colors"
+          className="w-11 h-full flex items-center justify-center hover:bg-accent transition-colors"
           aria-label="Maximize"
         >
-          <SquareIcon className="w-3.5 h-3.5 text-muted-foreground" />
+          <SquareIcon className="w-3 h-3 text-muted-foreground" />
         </button>
         <button
           onClick={handleClose}
-          className="w-12 h-full flex items-center justify-center hover:bg-destructive/80 hover:text-white transition-colors"
+          className="w-11 h-full flex items-center justify-center hover:bg-destructive hover:text-white transition-colors"
           aria-label="Close"
         >
-          <XIcon className="w-4 h-4 text-muted-foreground hover:text-white" />
+          <XIcon className="w-3.5 h-3.5" />
         </button>
       </div>
     </header>

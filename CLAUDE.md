@@ -14,10 +14,8 @@ packages/
 ## Quick Start
 
 ```bash
-pnpm install
-pnpm build:shared
-pnpm build:mcp-exe   # Build MCP server executable
-pnpm dev             # Start Tauri app
+pnpm install         # Install dependencies (no build needed for MCP)
+pnpm dev:tauri       # Optional: Start Tauri desktop app
 ```
 
 ## Design System
