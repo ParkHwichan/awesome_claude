@@ -27,6 +27,7 @@ import {
   XCircleIcon,
 } from 'lucide-react';
 import { FileExplorer } from '@/components/FileExplorer';
+import { AnimalIcon } from '@/components/Terminal';
 
 interface ChildProcessInfo {
   pid: number;
@@ -79,16 +80,40 @@ export function ProjectSidebar({
   );
 
   // Match sessions with terminal tabs
-  // Check if session.ppid matches shellPid OR any descendant process pid
+  // Check if session.ppid or any ancestor matches shellPid OR any descendant process pid
   const getMatchingTerminal = (session: Session): TerminalTab | undefined => {
     if (!session.ppid) return undefined;
-    return terminalTabs.find((tab) => {
-      // Direct match with shell
-      if (tab.shellPid === session.ppid) return true;
-      // Match with any descendant process (handles npm/node intermediate processes)
-      if (tab.childProcesses?.some(cp => cp.pid === session.ppid)) return true;
+
+    const sessionPpid = Number(session.ppid);
+    // Get ancestor PIDs from metadata (if available)
+    const ancestorPids: number[] = (session.metadata as { ancestorPids?: number[] })?.ancestorPids || [sessionPpid];
+
+    // Build set of all PIDs to match (ppid + ancestors)
+    const pidsToMatch = new Set<number>([sessionPpid, ...ancestorPids]);
+
+    console.log('[SessionMatch] Session:', session.id.slice(0, 8), 'pidsToMatch:', [...pidsToMatch]);
+
+    const match = terminalTabs.find((tab) => {
+      // Build set of terminal PIDs (shellPid + childProcesses)
+      const terminalPids = new Set<number>();
+      if (tab.shellPid) terminalPids.add(tab.shellPid);
+      tab.childProcesses?.forEach(cp => terminalPids.add(cp.pid));
+
+      // Check if any session PID matches any terminal PID
+      for (const pid of pidsToMatch) {
+        if (terminalPids.has(pid)) {
+          console.log('[SessionMatch] ✓ Match found:', pid, 'in', tab.title);
+          return true;
+        }
+      }
       return false;
     });
+
+    if (!match) {
+      console.log('[SessionMatch] ✗ No match for pids:', [...pidsToMatch]);
+    }
+
+    return match;
   };
 
   // Helper to find ticket by full or short ID
@@ -236,16 +261,18 @@ export function ProjectSidebar({
                     <ContextMenu key={session.id}>
                       <ContextMenuTrigger asChild>
                         <div className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] hover:bg-sidebar-accent cursor-default">
-                          {/* Color indicator from terminal or status */}
-                          {matchingTerminal?.color ? (
+                          {/* Animal icon or status indicator */}
+                          {session.iconIndex ? (
+                            <AnimalIcon index={session.iconIndex} size={20} className="shrink-0" />
+                          ) : matchingTerminal?.color ? (
                             <span
-                              className="w-2 h-2 rounded-full shrink-0"
+                              className="w-5 h-5 rounded-full shrink-0 flex items-center justify-center"
                               style={{ backgroundColor: matchingTerminal.color }}
                             />
                           ) : (
                             <span
                               className={cn(
-                                'w-1.5 h-1.5 rounded-full shrink-0',
+                                'w-2 h-2 rounded-full shrink-0',
                                 session.status === 'working' ? 'bg-primary' :
                                 session.status === 'active' ? 'bg-success' : 'bg-muted-foreground/50'
                               )}

@@ -71,6 +71,7 @@ pub fn run() {
             commands::terminal_resize,
             commands::terminal_kill,
             commands::terminal_list,
+            commands::terminal_update,
             commands::list_directory,
         ])
         .run(tauri::generate_context!())

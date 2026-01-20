@@ -8,6 +8,8 @@ import { useTerminalBlocks } from '@/hooks/useTerminalBlocks';
 import { useTerminalHistory } from '@/hooks/useTerminalHistory';
 import { BlockOverlay } from './BlockOverlay';
 import { TerminalInput } from './TerminalInput';
+import { Button } from '@/components/ui/button';
+import { ArrowDownIcon } from 'lucide-react';
 
 interface TerminalCreateResult {
   sessionId: string;
@@ -43,7 +45,7 @@ export function XtermTerminal({
   onExit,
 }: XtermTerminalProps) {
   const [isConnected, setIsConnected] = useState(false);
-  const [scrollTop, setScrollTop] = useState(0);
+  const [isAtBottom, setIsAtBottom] = useState(true);
   const [terminal, setTerminal] = useState<Terminal | null>(null);
   const [childProcesses, setChildProcesses] = useState<ChildProcessInfo[]>([]);
   const childProcessesRef = useRef<ChildProcessInfo[]>([]);
@@ -88,6 +90,15 @@ export function XtermTerminal({
     const sid = actualSessionIdRef.current;
     if (sid) {
       invoke('terminal_write', { sessionId: sid, data: key }).catch(console.error);
+    }
+  }, []);
+
+  // Scroll terminal to bottom
+  const scrollToBottom = useCallback(() => {
+    const term = terminalRef.current;
+    if (term) {
+      term.scrollToBottom();
+      setIsAtBottom(true);
     }
   }, []);
 
@@ -176,13 +187,16 @@ export function XtermTerminal({
     // NOTE: WebGL addon disabled - it prevents CSS cursor hiding
     // CSS in xterm-cursor-hide.css hides the cursor for Claude CLI's TUI
 
-    // Track scroll position for block overlay
-    const viewportElement = containerRef.current.querySelector('.xterm-viewport');
-    if (viewportElement) {
-      viewportElement.addEventListener('scroll', () => {
-        setScrollTop(viewportElement.scrollTop);
-      });
-    }
+    // Track scroll position for scroll-to-bottom button
+    // Use xterm's built-in scroll event for reliability
+    const scrollDisposable = terminal.onScroll(() => {
+      const buffer = terminal.buffer.active;
+      const totalRows = buffer.baseY + terminal.rows;
+      const viewportTop = buffer.viewportY;
+      // At bottom if viewport shows the last rows
+      const atBottom = viewportTop >= buffer.baseY;
+      setIsAtBottom(atBottom);
+    });
 
     // Initial fit
     fitAddon.fit();
@@ -192,6 +206,7 @@ export function XtermTerminal({
     setTerminal(terminal);
 
     return () => {
+      scrollDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -496,10 +511,25 @@ export function XtermTerminal({
 
   return (
     <div className="w-full h-full flex flex-col" style={{ backgroundColor: '#0d1117' }}>
-      <div
-        ref={containerRef}
-        className="flex-1 min-h-0"
-      />
+      <div className="flex-1 min-h-0 relative">
+        <div
+          ref={containerRef}
+          className="absolute inset-0"
+        />
+        {/* Scroll to bottom button */}
+        {!isAtBottom && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={scrollToBottom}
+            className="absolute bottom-2 right-4 z-10 h-8 gap-1.5 shadow-lg bg-card/90 hover:bg-card border border-border"
+            title="맨 아래로"
+          >
+            <ArrowDownIcon className="w-4 h-4" />
+            <span className="text-xs">맨 아래로</span>
+          </Button>
+        )}
+      </div>
       <TerminalInput
         onSubmit={handleCommandSubmit}
         onRawKey={handleRawKey}

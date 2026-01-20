@@ -83,19 +83,22 @@ function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${++idCounter}`;
 }
 
-// Terminal session info from Rust backend
+// Terminal session info from Rust backend (source of truth)
 interface TerminalSessionInfo {
   sessionId: string;
   workingDir: string;
   shellPid: number;
   isAlive: boolean;
+  childProcesses: Array<{ pid: number; name: string; cmd: string }>;
+  title: string;
+  color: string | null;
 }
 
 // Saved state for localStorage persistence
 interface SavedTerminalState {
   layout: LayoutNode | null;
   panelGroups: Array<[string, PanelGroup]>;
-  terminals: Array<[string, { id: string; sessionId: string; title: string; color?: string; iconIndex?: number }]>;
+  terminals: Array<[string, { id: string; sessionId: string; shellPid?: number; title: string; color?: string; iconIndex?: number }]>;
   activeGroupId: string | null;
 }
 
@@ -144,8 +147,8 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
   const [draggedTab, setDraggedTab] = useState<{ groupId: string; tabId: string } | null>(null);
   const [dropTarget, setDropTarget] = useState<{ groupId: string; index: number } | null>(null);
 
-  // Convert to legacy format for onTabsChange
-  const notifyTabsChange = useCallback(() => {
+  // Notify parent when terminals change
+  useEffect(() => {
     const legacyTabs: LegacyTerminalTab[] = [];
     terminals.forEach((terminal) => {
       legacyTabs.push({
@@ -159,6 +162,11 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
     });
     onTabsChange?.(legacyTabs);
   }, [terminals, onTabsChange]);
+
+  // Legacy callback (kept for manual triggers)
+  const notifyTabsChange = useCallback(() => {
+    // Now handled by useEffect above
+  }, []);
 
   // Create a new panel group with one terminal
   const createPanelGroup = useCallback((): { groupId: string; terminalId: string } => {
@@ -229,31 +237,41 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
           savedState.terminals.forEach(([terminalId, savedTerminal]) => {
             const liveSession = liveSessionMap.get(savedTerminal.sessionId);
             if (liveSession) {
-              // Session is still alive - restore with live data
+              // Session is still alive - use title/color from backend (source of truth)
               usedLiveSessions.add(savedTerminal.sessionId);
               newTerminals.set(terminalId, {
                 id: terminalId,
                 sessionId: savedTerminal.sessionId,
                 shellPid: liveSession.shellPid,
-                title: savedTerminal.title,
-                color: savedTerminal.color,
+                childProcesses: liveSession.childProcesses,
+                title: liveSession.title,  // From backend
+                color: liveSession.color ?? undefined,  // From backend
               });
             } else {
-              // Session is dead - create new pending session but keep name/color
+              // Session is dead - create new pending session
               newTerminals.set(terminalId, {
                 id: terminalId,
                 sessionId: `pending-${Date.now()}-${terminalId}`,
-                title: savedTerminal.title,
+                title: savedTerminal.title,  // Keep old title for dead session
                 color: savedTerminal.color,
               });
             }
           });
 
-          // Restore panel groups with saved titles/colors
+          // Restore panel groups with titles from terminals (backend source of truth)
           const newPanelGroups = new Map<string, PanelGroup>();
           savedState.panelGroups.forEach(([groupId, group]) => {
-            // Filter tabs to only include terminals that exist
-            const validTabs = group.tabs.filter((tab) => newTerminals.has(tab.terminalId));
+            // Filter tabs to only include terminals that exist and update titles from terminals
+            const validTabs = group.tabs
+              .filter((tab) => newTerminals.has(tab.terminalId))
+              .map((tab) => {
+                const terminal = newTerminals.get(tab.terminalId);
+                return {
+                  ...tab,
+                  title: terminal?.title ?? tab.title,
+                  color: terminal?.color,
+                };
+              });
             if (validTabs.length > 0) {
               newPanelGroups.set(groupId, {
                 ...group,
@@ -275,7 +293,7 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
           }
         }
 
-        // Fallback: No saved state or invalid - use live sessions
+        // Fallback: No saved state or invalid - use live sessions with backend titles
         if (matchingSessions.length > 0) {
           console.log(`[TerminalPanel] Restoring ${matchingSessions.length} live sessions for ${workingDir}`);
 
@@ -283,22 +301,24 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
           const newTerminals = new Map<string, TerminalInstance>();
           const tabs: PanelTab[] = [];
 
-          matchingSessions.forEach((session, index) => {
+          matchingSessions.forEach((session) => {
             const terminalId = generateId('terminal');
             const tabId = generateId('tab');
-            const tabNumber = index + 1;
 
             newTerminals.set(terminalId, {
               id: terminalId,
               sessionId: session.sessionId,
               shellPid: session.shellPid,
-              title: `Terminal ${tabNumber}`,
+              childProcesses: session.childProcesses,
+              title: session.title,  // From backend
+              color: session.color ?? undefined,  // From backend
             });
 
             tabs.push({
               id: tabId,
               terminalId,
-              title: `Terminal ${tabNumber}`,
+              title: session.title,  // From backend
+              color: session.color ?? undefined,  // From backend
             });
           });
 
@@ -331,7 +351,7 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
       panelGroups: Array.from(panelGroups.entries()),
       terminals: Array.from(terminals.entries()).map(([id, t]) => [
         id,
-        { id: t.id, sessionId: t.sessionId, title: t.title, color: t.color, iconIndex: t.iconIndex },
+        { id: t.id, sessionId: t.sessionId, shellPid: t.shellPid, title: t.title, color: t.color, iconIndex: t.iconIndex },
       ]),
       activeGroupId,
     };
@@ -490,31 +510,79 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
     setActiveGroupId(groupId);
   }, []);
 
-  const updateTabTitle = useCallback((groupId: string, tabId: string, title: string) => {
-    setPanelGroups((prev) => {
-      const group = prev.get(groupId);
-      if (!group) return prev;
-      const updated = new Map(prev);
-      updated.set(groupId, {
-        ...group,
-        tabs: group.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
-      });
-      return updated;
-    });
-  }, []);
+  const updateTabTitle = useCallback(async (groupId: string, tabId: string, title: string) => {
+    // Find the terminal's sessionId
+    const group = panelGroups.get(groupId);
+    if (!group) return;
+    const tab = group.tabs.find(t => t.id === tabId);
+    if (!tab) return;
+    const terminal = terminals.get(tab.terminalId);
+    if (!terminal || terminal.sessionId.startsWith('pending-')) return;
 
-  const updateTabColor = useCallback((groupId: string, tabId: string, color: string | undefined) => {
+    // Update backend (source of truth)
+    try {
+      await invoke('terminal_update', { sessionId: terminal.sessionId, title, color: null });
+    } catch (err) {
+      console.error('Failed to update terminal title:', err);
+      return;
+    }
+
+    // Update local state to match
     setPanelGroups((prev) => {
-      const group = prev.get(groupId);
-      if (!group) return prev;
+      const g = prev.get(groupId);
+      if (!g) return prev;
       const updated = new Map(prev);
       updated.set(groupId, {
-        ...group,
-        tabs: group.tabs.map((t) => (t.id === tabId ? { ...t, color } : t)),
+        ...g,
+        tabs: g.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
       });
       return updated;
     });
-  }, []);
+    setTerminals((prev) => {
+      const t = prev.get(tab.terminalId);
+      if (!t) return prev;
+      const updated = new Map(prev);
+      updated.set(tab.terminalId, { ...t, title });
+      return updated;
+    });
+  }, [panelGroups, terminals]);
+
+  const updateTabColor = useCallback(async (groupId: string, tabId: string, color: string | undefined) => {
+    // Find the terminal's sessionId
+    const group = panelGroups.get(groupId);
+    if (!group) return;
+    const tab = group.tabs.find(t => t.id === tabId);
+    if (!tab) return;
+    const terminal = terminals.get(tab.terminalId);
+    if (!terminal || terminal.sessionId.startsWith('pending-')) return;
+
+    // Update backend (source of truth) - pass color as Option<Option<String>>
+    try {
+      await invoke('terminal_update', { sessionId: terminal.sessionId, title: null, color: color ?? null });
+    } catch (err) {
+      console.error('Failed to update terminal color:', err);
+      return;
+    }
+
+    // Update local state to match
+    setPanelGroups((prev) => {
+      const g = prev.get(groupId);
+      if (!g) return prev;
+      const updated = new Map(prev);
+      updated.set(groupId, {
+        ...g,
+        tabs: g.tabs.map((t) => (t.id === tabId ? { ...t, color } : t)),
+      });
+      return updated;
+    });
+    setTerminals((prev) => {
+      const t = prev.get(tab.terminalId);
+      if (!t) return prev;
+      const updated = new Map(prev);
+      updated.set(tab.terminalId, { ...t, color });
+      return updated;
+    });
+  }, [panelGroups, terminals]);
 
   const openRenameDialog = useCallback((groupId: string, tabId: string, currentTitle: string) => {
     setRenameTarget({ groupId, tabId });
@@ -808,23 +876,35 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
           </div>
         </div>
 
-        {/* Terminal content */}
-        <div className="flex-1 min-h-0">
-          {activeTerminal && activeTab && (
-            <XtermTerminal
-              key={activeTab.terminalId}
-              sessionId={activeTerminal.sessionId}
-              workingDir={workingDir}
-              isActive={isActiveGroup}
-              onSessionCreated={(sessionId, shellPid) =>
-                handleSessionCreated(activeTab.terminalId, sessionId, shellPid)
-              }
-              onChildProcessesChange={(processes) =>
-                handleChildProcessesChange(activeTab.terminalId, processes)
-              }
-              onExit={() => handleTerminalExit(groupId, activeTab.id)}
-            />
-          )}
+        {/* Terminal content - render all tabs but hide inactive ones */}
+        <div className="flex-1 min-h-0 relative">
+          {group.tabs.map((tab) => {
+            const terminal = terminals.get(tab.terminalId);
+            if (!terminal) return null;
+            const isActiveTab = tab.id === group.activeTabId;
+            return (
+              <div
+                key={tab.terminalId}
+                className={cn(
+                  'absolute inset-0',
+                  isActiveTab ? 'visible' : 'invisible'
+                )}
+              >
+                <XtermTerminal
+                  sessionId={terminal.sessionId}
+                  workingDir={workingDir}
+                  isActive={isActiveGroup && isActiveTab}
+                  onSessionCreated={(sessionId, shellPid) =>
+                    handleSessionCreated(tab.terminalId, sessionId, shellPid)
+                  }
+                  onChildProcessesChange={(processes) =>
+                    handleChildProcessesChange(tab.terminalId, processes)
+                  }
+                  onExit={() => handleTerminalExit(groupId, tab.id)}
+                />
+              </div>
+            );
+          })}
         </div>
       </div>
     );

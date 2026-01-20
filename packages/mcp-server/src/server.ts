@@ -21,9 +21,51 @@ import {
 import { broadcaster } from './websocket/broadcaster.js';
 import { basename } from 'path';
 
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { setCurrentProject, setCurrentSession, getCurrentSession } from './state.js';
 import type { SessionRegisteredEvent, SessionDisconnectedEvent, ProjectCreatedEvent } from '@awesome-claude/shared';
+
+// Get ancestor PID chain (Windows only for now)
+function getAncestorPids(startPid: number): number[] {
+  const ancestors: number[] = [];
+  let currentPid = startPid;
+
+  try {
+    // Traverse up the process tree
+    for (let i = 0; i < 20; i++) { // Max depth to prevent infinite loop
+      if (currentPid <= 0 || currentPid === 1) break;
+
+      ancestors.push(currentPid);
+
+      // Get parent PID using wmic (Windows)
+      if (process.platform === 'win32') {
+        const result = spawnSync('wmic', ['process', 'where', `ProcessId=${currentPid}`, 'get', 'ParentProcessId', '/value'], {
+          encoding: 'utf8',
+          timeout: 1000,
+        });
+        const match = result.stdout?.match(/ParentProcessId=(\d+)/);
+        if (match) {
+          currentPid = parseInt(match[1], 10);
+        } else {
+          break;
+        }
+      } else {
+        // Unix: read /proc/{pid}/stat
+        try {
+          const stat = require('fs').readFileSync(`/proc/${currentPid}/stat`, 'utf8');
+          const parts = stat.split(' ');
+          currentPid = parseInt(parts[3], 10); // ppid is 4th field
+        } catch {
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[MCP] Failed to get ancestor PIDs:', e);
+  }
+
+  return ancestors;
+}
 
 const SERVER_NAME = 'awesome-claude-mcp';
 const SERVER_VERSION = '0.1.0';
@@ -62,6 +104,8 @@ async function autoRegister(): Promise<void> {
   const workingDirectory = process.cwd();
   const projectName = basename(workingDirectory);
   const ppid = process.ppid;
+  const ancestorPids = getAncestorPids(ppid);
+  console.log(`[MCP] Process ppid: ${ppid}, ancestors: [${ancestorPids.join(', ')}]`);
 
   // Clean up dead sessions first
   await cleanupDeadSessions(isProcessAlive);
@@ -99,6 +143,7 @@ async function autoRegister(): Promise<void> {
       ppid,
       name: `Session ${shortId}`,
       model: process.env.CLAUDE_MODEL || 'unknown',
+      metadata: { ancestorPids }, // Store ancestor chain for matching
     });
   }
   setCurrentSession(session);

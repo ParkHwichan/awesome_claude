@@ -153,6 +153,17 @@ pub async fn terminal_list(
     Ok(terminal_manager.list())
 }
 
+/// Update terminal metadata (title, color)
+#[tauri::command]
+pub async fn terminal_update(
+    session_id: String,
+    title: Option<String>,
+    color: Option<Option<String>>,
+    terminal_manager: State<'_, TerminalManager>,
+) -> Result<(), String> {
+    terminal_manager.update(&session_id, title, color)
+}
+
 // ============ External Terminal Commands ============
 
 /// Open external terminal with Claude Code at the specified directory

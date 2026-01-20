@@ -169,9 +169,49 @@ function App() {
   const [currentView, setCurrentView] = useState<'board' | 'terminal'>('board');
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
 
+  // Load terminal info from Rust backend (source of truth)
+  const loadTerminalInfo = useCallback(async () => {
+    try {
+      const terminals = await invoke<Array<{
+        sessionId: string;
+        workingDir: string;
+        shellPid: number;
+        isAlive: boolean;
+        childProcesses: Array<{ pid: number; name: string; cmd: string }>;
+        title: string;
+        color: string | null;
+      }>>('terminal_list');
+
+      // Convert to TerminalTab format, filter by selected project's working directory
+      const normalizedProjectDir = selectedProject?.workingDirectory?.toLowerCase().replace(/\\/g, '/');
+      const tabs: TerminalTab[] = terminals
+        .filter(t => t.isAlive && normalizedProjectDir && t.workingDir.toLowerCase().replace(/\\/g, '/') === normalizedProjectDir)
+        .map((t) => ({
+          sessionId: t.sessionId,
+          shellPid: t.shellPid,
+          childProcesses: t.childProcesses,
+          title: t.title,  // From backend (source of truth)
+          color: t.color ?? undefined,  // From backend
+        }));
+
+      setTerminalTabs(tabs);
+    } catch (err) {
+      console.error('Failed to load terminal info:', err);
+    }
+  }, [selectedProject?.workingDirectory]);
+
+  // Load terminal info periodically
+  useEffect(() => {
+    loadTerminalInfo();
+    const interval = setInterval(loadTerminalInfo, 2000);
+    return () => clearInterval(interval);
+  }, [loadTerminalInfo]);
+
   const handleTerminalTabsChange = useCallback((tabs: TerminalTab[]) => {
-    setTerminalTabs(tabs);
-  }, []);
+    // Backend is source of truth - just refresh from backend
+    // This callback is triggered when terminal panel updates, so we refresh to get latest state
+    loadTerminalInfo();
+  }, [loadTerminalInfo]);
 
   const handleDeleteProject = useCallback((id: string) => {
     deleteProject(id);

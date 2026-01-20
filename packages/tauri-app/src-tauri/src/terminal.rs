@@ -38,6 +38,10 @@ pub struct TerminalSession {
     cols: Mutex<u16>,
     rows: Mutex<u16>,
     shell_pid: AtomicU32,
+    child_processes: Mutex<Vec<ChildProcessInfo>>,
+    // User-configurable metadata (source of truth)
+    title: Mutex<String>,
+    color: Mutex<Option<String>>,
 }
 
 impl TerminalSession {
@@ -170,6 +174,10 @@ impl TerminalManager {
             .try_clone_reader()
             .map_err(|e| format!("Failed to get reader: {}", e))?;
 
+        // Generate default title based on existing session count
+        let session_count = self.sessions.lock().len();
+        let default_title = format!("Terminal {}", session_count + 1);
+
         let session = Arc::new(TerminalSession {
             inner: Mutex::new(TerminalInner { pty_pair, writer }),
             attached: AtomicBool::new(false),
@@ -178,6 +186,9 @@ impl TerminalManager {
             cols: Mutex::new(cols),
             rows: Mutex::new(rows),
             shell_pid: AtomicU32::new(shell_pid),
+            child_processes: Mutex::new(Vec::new()),
+            title: Mutex::new(default_title),
+            color: Mutex::new(None),
         });
 
         // Reader thread - reads from PTY and sends raw bytes as base64
@@ -259,8 +270,11 @@ impl TerminalManager {
                     }
                 }
 
-                // Send event if descendants changed
+                // Update session and send event if descendants changed
                 if descendants != last_children {
+                    // Store in session for API access
+                    *session_monitor.child_processes.lock() = descendants.clone();
+                    // Also emit event for real-time updates
                     let _ = app_handle_monitor.emit(
                         &format!("terminal:children:{}", sid_monitor),
                         &descendants,
@@ -333,8 +347,27 @@ impl TerminalManager {
                 working_dir: s.working_dir.clone(),
                 shell_pid: s.shell_pid.load(Ordering::SeqCst),
                 is_alive: s.is_alive.load(Ordering::SeqCst),
+                child_processes: s.child_processes.lock().clone(),
+                title: s.title.lock().clone(),
+                color: s.color.lock().clone(),
             })
             .collect()
+    }
+
+    /// Update terminal metadata (title, color)
+    pub fn update(&self, session_id: &str, title: Option<String>, color: Option<Option<String>>) -> Result<(), String> {
+        let sessions = self.sessions.lock();
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Session not found: {}", session_id))?;
+
+        if let Some(t) = title {
+            *session.title.lock() = t;
+        }
+        if let Some(c) = color {
+            *session.color.lock() = c;
+        }
+        Ok(())
     }
 }
 
@@ -345,4 +378,7 @@ pub struct TerminalSessionInfo {
     pub working_dir: String,
     pub shell_pid: u32,
     pub is_alive: bool,
+    pub child_processes: Vec<ChildProcessInfo>,
+    pub title: String,
+    pub color: Option<String>,
 }
