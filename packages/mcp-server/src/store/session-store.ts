@@ -109,7 +109,6 @@ export async function cleanupDeadSessions(isProcessAlive: (pid: number) => boole
     if (!session.ppid || session.ppid === 0 || !isProcessAlive(session.ppid)) {
       await disconnectSession(session.id);
       cleanedCount++;
-      console.error(`Cleaned up dead session: ${session.id} (PPID: ${session.ppid})`);
     }
   }
 
@@ -281,10 +280,15 @@ export async function incrementSessionStats(
 export async function disconnectSession(id: string): Promise<Session | null> {
   const db = getDb();
 
-  // Release any claimed tickets back to pending
+  // Release any claimed tickets back to pending (but not completed, failed, or archived)
   await db.update(tickets)
     .set({ claimedBy: null, claimedAt: null, status: 'pending' })
-    .where(and(eq(tickets.claimedBy, id), ne(tickets.status, 'completed'), ne(tickets.status, 'failed')))
+    .where(and(
+      eq(tickets.claimedBy, id),
+      ne(tickets.status, 'completed'),
+      ne(tickets.status, 'failed'),
+      ne(tickets.status, 'archived')
+    ))
     .run();
 
   return updateSessionStatus(id, 'disconnected');
@@ -296,10 +300,15 @@ export async function deleteSession(id: string): Promise<boolean> {
 
   const db = getDb();
 
-  // Release any claimed tickets
+  // Release any claimed tickets (but not completed, failed, or archived)
   await db.update(tickets)
     .set({ claimedBy: null, claimedAt: null, status: 'pending' })
-    .where(eq(tickets.claimedBy, id))
+    .where(and(
+      eq(tickets.claimedBy, id),
+      ne(tickets.status, 'completed'),
+      ne(tickets.status, 'failed'),
+      ne(tickets.status, 'archived')
+    ))
     .run();
 
   await db.delete(sessions).where(eq(sessions.id, id)).run();

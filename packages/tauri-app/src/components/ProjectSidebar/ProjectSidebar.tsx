@@ -5,41 +5,88 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
+import {
   FolderIcon,
+  FolderPlusIcon,
   ChevronsUpDownIcon,
   CheckIcon,
   LayoutDashboardIcon,
+  TerminalIcon,
   AlertTriangleIcon,
+  LinkIcon,
+  TrashIcon,
 } from 'lucide-react';
+import { FileExplorer } from '@/components/FileExplorer';
+
+interface ChildProcessInfo {
+  pid: number;
+  name: string;
+  cmd: string;
+}
+
+interface TerminalTab {
+  sessionId: string;
+  shellPid?: number;
+  childProcesses?: ChildProcessInfo[];
+  title: string;
+  color?: string;
+}
 
 interface ProjectSidebarProps {
   projects: ProjectSummary[];
   tickets: Ticket[];
   sessions: Session[];
+  terminalTabs?: TerminalTab[];
   selectedProjectId: string | null;
   selectedTicketId: string | null;
+  currentView: 'board' | 'terminal';
   onSelectProject: (id: string) => void;
   onSelectTicket: (id: string) => void;
-  onBackToDashboard: () => void;
+  onSelectView: (view: 'board' | 'terminal') => void;
+  onDeleteProject: (id: string) => void;
+  onCreateProject: () => void;
 }
 
 export function ProjectSidebar({
   projects,
   tickets,
   sessions,
+  terminalTabs = [],
   selectedProjectId,
   selectedTicketId,
+  currentView,
   onSelectProject,
   onSelectTicket,
-  onBackToDashboard,
+  onSelectView,
+  onDeleteProject,
+  onCreateProject,
 }: ProjectSidebarProps) {
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const projectSessions = sessions.filter(
     (s) => s.projectId === selectedProjectId && s.status !== 'disconnected'
   );
+
+  // Match sessions with terminal tabs
+  // Check if session.ppid matches shellPid OR any descendant process pid
+  const getMatchingTerminal = (session: Session): TerminalTab | undefined => {
+    if (!session.ppid) return undefined;
+    return terminalTabs.find((tab) => {
+      // Direct match with shell
+      if (tab.shellPid === session.ppid) return true;
+      // Match with any descendant process (handles npm/node intermediate processes)
+      if (tab.childProcesses?.some(cp => cp.pid === session.ppid)) return true;
+      return false;
+    });
+  };
 
   // Helper to find ticket by full or short ID
   const findTicketById = (id: string): Ticket | undefined => {
@@ -93,44 +140,82 @@ export function ProjectSidebar({
               </div>
             ) : (
               projects.map((project) => (
-                <DropdownMenuItem
-                  key={project.id}
-                  onClick={() => onSelectProject(project.id)}
-                  className="flex items-center gap-2 cursor-pointer"
-                >
-                  <div className="w-5 h-5 rounded bg-primary/10 flex items-center justify-center shrink-0">
-                    <FolderIcon className="w-3 h-3 text-primary" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] truncate">{project.name}</div>
-                  </div>
-                  {selectedProjectId === project.id && (
-                    <CheckIcon className="w-3.5 h-3.5 text-primary shrink-0" />
-                  )}
-                </DropdownMenuItem>
+                <ContextMenu key={project.id}>
+                  <ContextMenuTrigger asChild>
+                    <DropdownMenuItem
+                      onClick={() => onSelectProject(project.id)}
+                      className="flex items-center gap-2 cursor-pointer"
+                      onSelect={(e) => e.preventDefault()}
+                    >
+                      <div className="w-5 h-5 rounded bg-primary/10 flex items-center justify-center shrink-0">
+                        <FolderIcon className="w-3 h-3 text-primary" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[13px] truncate">{project.name}</div>
+                      </div>
+                      {selectedProjectId === project.id && (
+                        <CheckIcon className="w-3.5 h-3.5 text-primary shrink-0" />
+                      )}
+                    </DropdownMenuItem>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem
+                      onClick={() => onDeleteProject(project.id)}
+                      className="text-destructive focus:text-destructive"
+                    >
+                      <TrashIcon className="w-4 h-4 mr-2" />
+                      Delete Project
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               ))
             )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={onCreateProject}
+              className="flex items-center gap-2 cursor-pointer"
+            >
+              <div className="w-5 h-5 rounded bg-success/10 flex items-center justify-center shrink-0">
+                <FolderPlusIcon className="w-3 h-3 text-success" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[13px]">New Project...</div>
+              </div>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
 
       <ScrollArea className="flex-1">
         <div className="py-2">
-          {/* Dashboard Button */}
+          {/* Navigation Buttons */}
           {selectedProject && (
-            <div className="px-2 mb-1">
+            <div className="px-2 mb-1 space-y-0.5">
               <button
-                onClick={onBackToDashboard}
+                onClick={() => onSelectView('board')}
                 className={cn(
                   'w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] transition-colors',
                   'hover:bg-sidebar-accent',
-                  !selectedTicketId
+                  currentView === 'board'
                     ? 'bg-sidebar-accent text-sidebar-foreground'
                     : 'text-muted-foreground hover:text-sidebar-foreground'
                 )}
               >
                 <LayoutDashboardIcon className="w-4 h-4" />
                 <span>Board</span>
+              </button>
+              <button
+                onClick={() => onSelectView('terminal')}
+                className={cn(
+                  'w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] transition-colors',
+                  'hover:bg-sidebar-accent',
+                  currentView === 'terminal'
+                    ? 'bg-sidebar-accent text-sidebar-foreground'
+                    : 'text-muted-foreground hover:text-sidebar-foreground'
+                )}
+              >
+                <TerminalIcon className="w-4 h-4" />
+                <span>Terminal</span>
               </button>
             </div>
           )}
@@ -142,23 +227,39 @@ export function ProjectSidebar({
                 Sessions
               </div>
               <div className="px-2 mt-1">
-                {projectSessions.map((session) => (
-                  <div
-                    key={session.id}
-                    className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px]"
-                  >
-                    <span
-                      className={cn(
-                        'w-1.5 h-1.5 rounded-full shrink-0',
-                        session.status === 'working' ? 'bg-primary' :
-                        session.status === 'active' ? 'bg-success' : 'bg-muted-foreground/50'
+                {projectSessions.map((session) => {
+                  const matchingTerminal = getMatchingTerminal(session);
+                  return (
+                    <div
+                      key={session.id}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px]"
+                    >
+                      {/* Color indicator from terminal or status */}
+                      {matchingTerminal?.color ? (
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ backgroundColor: matchingTerminal.color }}
+                        />
+                      ) : (
+                        <span
+                          className={cn(
+                            'w-1.5 h-1.5 rounded-full shrink-0',
+                            session.status === 'working' ? 'bg-primary' :
+                            session.status === 'active' ? 'bg-success' : 'bg-muted-foreground/50'
+                          )}
+                        />
                       )}
-                    />
-                    <span className="truncate flex-1 text-muted-foreground">
-                      {session.name || session.id.slice(0, 6)}
-                    </span>
-                  </div>
-                ))}
+                      <span className="truncate flex-1 text-muted-foreground">
+                        {/* Show terminal name if matched, otherwise session name or ID */}
+                        {matchingTerminal?.title || session.name || session.id.slice(0, 6)}
+                      </span>
+                      {/* Show link icon if matched with terminal */}
+                      {matchingTerminal && (
+                        <LinkIcon className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -187,6 +288,16 @@ export function ProjectSidebar({
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Files */}
+          {selectedProject && (
+            <div className="mt-4">
+              <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                Files
+              </div>
+              <FileExplorer workingDirectory={selectedProject.workingDirectory} />
             </div>
           )}
 

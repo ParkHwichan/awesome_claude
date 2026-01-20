@@ -23,6 +23,12 @@ function toProject(row: typeof projects.$inferSelect): Project {
 
 // Project operations
 export async function createProject(data: CreateProjectInput): Promise<Project> {
+  // Check if project already exists for this working directory
+  const existing = await getProjectByWorkingDirectory(data.workingDirectory);
+  if (existing) {
+    return existing;
+  }
+
   const db = getDb();
   const now = new Date().toISOString();
   const id = uuidv4();

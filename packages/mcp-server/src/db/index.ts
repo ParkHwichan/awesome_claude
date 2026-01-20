@@ -32,7 +32,6 @@ export function initDatabase() {
   // Run migrations synchronously
   runMigrations(client, dbPath);
 
-  console.error('Database initialized with Drizzle + libsql');
   return db;
 }
 
@@ -51,7 +50,7 @@ export function closeDatabase(): void {
   }
 }
 
-const CURRENT_VERSION = 6;
+const CURRENT_VERSION = 7;
 
 function runMigrations(libsqlClient: Client, dbPath: string): void {
   // Use a version file since libsql client is async-only
@@ -66,11 +65,8 @@ function runMigrations(libsqlClient: Client, dbPath: string): void {
     }
   }
 
-  console.error(`Database version: ${version}, current: ${CURRENT_VERSION}`);
-
   // Initial schema creation
   if (version < 1) {
-    console.error('Running migration to version 1: Creating initial schema');
     libsqlClient.executeMultiple(`
       PRAGMA foreign_keys = ON;
       CREATE TABLE IF NOT EXISTS projects (
@@ -213,6 +209,25 @@ function runMigrations(libsqlClient: Client, dbPath: string): void {
       // Columns may already exist
     }
     version = 6;
+  }
+
+  // Migration for unique working_directory constraint
+  if (version < 7) {
+    console.error('Running migration to version 7: Adding unique constraint on working_directory');
+    try {
+      // SQLite doesn't support ADD CONSTRAINT, so we need to:
+      // 1. Delete duplicate projects (keep the oldest one)
+      // 2. Create unique index
+      libsqlClient.executeMultiple(`
+        DELETE FROM projects WHERE id NOT IN (
+          SELECT MIN(id) FROM projects GROUP BY working_directory
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_working_directory_unique ON projects(working_directory);
+      `);
+    } catch (e) {
+      console.error('Migration 7 error (may be safe to ignore if index exists):', e);
+    }
+    version = 7;
   }
 
   writeFileSync(versionFile, String(CURRENT_VERSION));

@@ -24,7 +24,6 @@ class WebSocketBroadcaster {
       this.ws = new WebSocket(TAURI_WS_URL);
 
       this.ws.on('open', () => {
-        console.error(`Connected to Tauri WebSocket hub at ${TAURI_WS_URL}`);
         this.isConnecting = false;
         this.reconnectAttempts = 0;
 
@@ -36,46 +35,31 @@ class WebSocketBroadcaster {
             timestamp: new Date().toISOString(),
             payload: { sessionId },
           } as any);
-          console.error(`Registered session ${sessionId} with WebSocket hub`);
         }
 
         // Flush queued messages
-        console.error(`Flushing ${this.messageQueue.length} queued messages`);
         for (const event of this.messageQueue) {
           this.send(event);
-          console.error(`Flushed event: ${event.type}`);
         }
         this.messageQueue = [];
       });
 
-      this.ws.on('message', (data) => {
-        try {
-          const message = JSON.parse(data.toString());
-          if (message.type === 'connection:established') {
-            console.error(`WebSocket connection established, clientId: ${message.payload?.clientId}`);
-          }
-        } catch {
-          // Ignore parse errors
-        }
+      this.ws.on('message', () => {
+        // Ignore incoming messages
       });
 
       this.ws.on('close', () => {
-        console.error('Disconnected from Tauri WebSocket hub');
         this.ws = null;
         this.isConnecting = false;
         this.scheduleReconnect();
       });
 
-      this.ws.on('error', (error) => {
-        // Only log if not a connection refused error (Tauri might not be running)
-        if ((error as any).code !== 'ECONNREFUSED') {
-          console.error('WebSocket error:', error.message);
-        }
+      this.ws.on('error', () => {
         this.ws = null;
         this.isConnecting = false;
         this.scheduleReconnect();
       });
-    } catch (error) {
+    } catch {
       this.isConnecting = false;
       this.scheduleReconnect();
     }
@@ -87,7 +71,6 @@ class WebSocketBroadcaster {
     }
 
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      console.error(`Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Tauri app may not be running.`);
       return;
     }
 
@@ -110,7 +93,6 @@ class WebSocketBroadcaster {
     }
 
     this.messageQueue = [];
-    console.error('WebSocket client stopped');
   }
 
   private send(event: AppEvent): void {

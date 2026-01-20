@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { open } from '@tauri-apps/plugin-dialog';
 import { Header } from './components/Layout';
 import { ProjectSidebar } from './components/ProjectSidebar';
 import { TicketDetail } from './components/TicketDetail';
 import { KanbanBoard } from './components/KanbanBoard';
+import { TerminalPanel, type LegacyTerminalTab as TerminalTab } from './components/Terminal';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useProjectStore } from './store/project-store';
 import { useConversationStore } from './store/conversation-store';
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { FolderIcon, AlertCircleIcon, PanelLeftCloseIcon, PanelLeftOpenIcon } from 'lucide-react';
@@ -47,6 +49,8 @@ function App() {
     handleSessionRegistered,
     handleSessionUpdated,
     handleSessionDisconnected,
+    deleteProject,
+    createProject,
   } = useProjectStore();
 
   // Load initial data on mount and periodically refresh sessions
@@ -155,8 +159,30 @@ function App() {
   }, [selectedProjectId, subscribeToProject, unsubscribeFromProject]);
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
+  const projectTickets = tickets.filter((t) => t.projectId === selectedProjectId);
   const selectedTicket = tickets.find((t) => t.id === selectedTicketId);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [currentView, setCurrentView] = useState<'board' | 'terminal'>('board');
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
+
+  const handleTerminalTabsChange = useCallback((tabs: TerminalTab[]) => {
+    setTerminalTabs(tabs);
+  }, []);
+
+  const handleDeleteProject = useCallback((id: string) => {
+    deleteProject(id);
+  }, [deleteProject]);
+
+  const handleCreateProject = useCallback(async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: 'Select Project Folder',
+    });
+    if (selected && typeof selected === 'string') {
+      createProject(selected);
+    }
+  }, [createProject]);
 
   return (
     <div className="flex flex-col h-screen">
@@ -175,66 +201,99 @@ function App() {
               projects={projects}
               tickets={tickets}
               sessions={sessions}
+              terminalTabs={terminalTabs}
               selectedProjectId={selectedProjectId}
               selectedTicketId={selectedTicketId}
+              currentView={currentView}
               onSelectProject={setSelectedProjectId}
               onSelectTicket={setSelectedTicketId}
-              onBackToDashboard={() => setSelectedTicketId(null)}
+              onSelectView={setCurrentView}
+              onDeleteProject={handleDeleteProject}
+              onCreateProject={handleCreateProject}
             />
           </div>
         </div>
 
         {/* Main content */}
-        <main className="flex-1 overflow-hidden bg-background relative">
-          {/* Sidebar toggle button */}
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 left-2 z-10 h-8 w-8"
-                  onClick={() => setSidebarOpen(!sidebarOpen)}
-                >
-                  {sidebarOpen ? (
-                    <PanelLeftCloseIcon className="h-4 w-4" />
-                  ) : (
-                    <PanelLeftOpenIcon className="h-4 w-4" />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                {sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          {selectedProject ? (
-            <KanbanBoard
-              tickets={tickets}
-              selectedTicketId={selectedTicketId}
-              onSelectTicket={setSelectedTicketId}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-full p-10">
-              <div className="text-center max-w-md">
-                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-5">
-                  <FolderIcon className="w-6 h-6 text-primary" />
+        <main className="flex-1 overflow-hidden bg-background relative flex flex-col">
+          {/* Top toolbar buttons */}
+          <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => setSidebarOpen(!sidebarOpen)}
+                  >
+                    {sidebarOpen ? (
+                      <PanelLeftCloseIcon className="h-4 w-4" />
+                    ) : (
+                      <PanelLeftOpenIcon className="h-4 w-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="right">
+                  {sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+
+          {/* Main content area */}
+          <div className="flex-1 min-h-0 overflow-hidden relative">
+            {selectedProject ? (
+              <>
+                {/* Using absolute positioning to preserve terminal state when switching views */}
+                <div className={cn(
+                  'absolute inset-0',
+                  currentView === 'board'
+                    ? 'z-10 opacity-100 pointer-events-auto'
+                    : 'z-0 opacity-0 pointer-events-none'
+                )}>
+                  <KanbanBoard
+                    tickets={projectTickets}
+                    selectedTicketId={selectedTicketId}
+                    onSelectTicket={setSelectedTicketId}
+                  />
                 </div>
-                <h2 className="text-xl font-semibold text-foreground mb-2">
-                  Awesome Claude
-                </h2>
-                <p className="text-muted-foreground leading-relaxed mb-6">
-                  Multi-session task management for Claude Code. Create a project or connect Claude Code sessions using MCP to get started.
-                </p>
-                {!isConnected && (
-                  <div className="inline-flex items-center gap-2 text-sm text-warning bg-warning/10 px-4 py-3 rounded-lg">
-                    <AlertCircleIcon className="w-4 h-4" />
-                    MCP server is not connected. Start the server to see projects.
+                <div className={cn(
+                  'absolute inset-0',
+                  currentView === 'terminal'
+                    ? 'z-10 opacity-100 pointer-events-auto'
+                    : 'z-0 opacity-0 pointer-events-none'
+                )}>
+                  <TerminalPanel
+                    key={selectedProject.id}
+                    workingDir={selectedProject.workingDirectory}
+                    projectName={selectedProject.name}
+                    onTabsChange={handleTerminalTabsChange}
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center justify-center h-full p-10">
+                <div className="text-center max-w-md">
+                  <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-5">
+                    <FolderIcon className="w-6 h-6 text-primary" />
                   </div>
-                )}
+                  <h2 className="text-xl font-semibold text-foreground mb-2">
+                    Awesome Claude
+                  </h2>
+                  <p className="text-muted-foreground leading-relaxed mb-6">
+                    Multi-session task management for Claude Code. Create a project or connect Claude Code sessions using MCP to get started.
+                  </p>
+                  {!isConnected && (
+                    <div className="inline-flex items-center gap-2 text-sm text-warning bg-warning/10 px-4 py-3 rounded-lg">
+                      <AlertCircleIcon className="w-4 h-4" />
+                      MCP server is not connected. Start the server to see projects.
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </main>
       </div>
 

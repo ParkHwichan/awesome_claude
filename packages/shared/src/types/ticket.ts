@@ -3,28 +3,13 @@
  */
 export type TicketStatus = 'pending' | 'claimed' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'archived';
 export type TicketPriority = 'low' | 'medium' | 'high' | 'urgent';
-export type TicketType = 'task' | 'bug' | 'feature' | 'epic' | 'story';
+export type TicketType = 'task' | 'bug' | 'feature' | 'epic' | 'story' | 'refactor' | 'chore';
 
 export interface ChecklistItem {
   id: string;
   text: string;
   completed: boolean;
   completedAt?: string;
-}
-
-/**
- * Comment - Notes and progress updates on a ticket
- */
-export type CommentType = 'comment' | 'progress' | 'system';
-
-export interface TicketComment {
-  id: string;
-  authorId: string;      // session ID
-  authorName?: string;   // display name
-  content: string;
-  type: CommentType;
-  createdAt: string;
-  updatedAt?: string;
 }
 
 /**
@@ -71,9 +56,6 @@ export interface Ticket {
 
   // Checklist
   checklist?: ChecklistItem[];
-
-  // Comments & Activity
-  comments?: TicketComment[];
 
   // Tags & Categories
   tags?: TicketTag[];
@@ -126,20 +108,6 @@ export type CreateTicketInput = Pick<Ticket, 'projectId' | 'title' | 'createdBy'
   Partial<Pick<Ticket, 'description' | 'priority' | 'type' | 'dueDate' | 'blockedBy' | 'checklist' | 'tags' | 'category' | 'metadata'>>;
 
 export type UpdateTicketInput = Partial<Pick<Ticket, 'title' | 'description' | 'priority' | 'type' | 'dueDate' | 'blockedBy' | 'blocks' | 'checklist' | 'tags' | 'category' | 'metadata'>>;
-
-export interface AddCommentInput {
-  ticketId: string;
-  authorId: string;
-  authorName?: string;
-  content: string;
-  type?: CommentType;
-}
-
-export interface UpdateCommentInput {
-  ticketId: string;
-  commentId: string;
-  content: string;
-}
 
 export interface ClaimTicketInput {
   ticketId: string;

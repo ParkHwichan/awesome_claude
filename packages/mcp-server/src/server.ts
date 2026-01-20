@@ -19,7 +19,6 @@ import {
   cleanupDeadSessions,
 } from './store/session-store.js';
 import { broadcaster } from './websocket/broadcaster.js';
-import { conversationWatcher } from './watcher/index.js';
 import { basename } from 'path';
 
 import { execSync } from 'child_process';
@@ -64,9 +63,6 @@ async function autoRegister(): Promise<void> {
   const projectName = basename(workingDirectory);
   const ppid = process.ppid;
 
-  console.error(`Auto-registering for working directory: ${workingDirectory}`);
-  console.error(`Parent PID (session ID): ${ppid}`);
-
   // Clean up dead sessions first
   await cleanupDeadSessions(isProcessAlive);
 
@@ -80,9 +76,6 @@ async function autoRegister(): Promise<void> {
       description: `Auto-created project for ${projectName}`,
     });
     isNewProject = true;
-    console.error(`Created new project: ${project.name} (${project.id})`);
-  } else {
-    console.error(`Found existing project: ${project.name} (${project.id})`);
   }
   setCurrentProject(project);
 
@@ -98,10 +91,7 @@ async function autoRegister(): Promise<void> {
 
   // Check if session with this PPID already exists
   let session = await getSessionByPpid(ppid);
-  let isNewSession = false;
-  if (session) {
-    console.error(`Reusing existing session for PPID ${ppid}: ${session.id}`);
-  } else {
+  if (!session) {
     // Create new session with PPID - use short ID for display
     const shortId = Math.random().toString(36).substring(2, 8);
     session = await registerSessionByPpid({
@@ -110,8 +100,6 @@ async function autoRegister(): Promise<void> {
       name: `Session ${shortId}`,
       model: process.env.CLAUDE_MODEL || 'unknown',
     });
-    isNewSession = true;
-    console.error(`Registered new session: ${session.id} (PPID: ${ppid})`);
   }
   setCurrentSession(session);
 
@@ -125,16 +113,8 @@ async function autoRegister(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  // Debug: print environment variables
-  console.error('=== Environment Variables ===');
-  console.error(`CWD: ${process.cwd()}`);
-  console.error(`PPID: ${process.ppid}`);
-  console.error(`PID: ${process.pid}`);
-  console.error('=============================');
-
-  // Initialize database (drizzle)
+  // Initialize database
   initDatabase();
-  console.error(`Database initialized`);
 
   // Connect to Tauri WebSocket hub first (non-blocking, will retry in background)
   // Messages will be queued until connection is established
@@ -142,9 +122,6 @@ async function main(): Promise<void> {
 
   // Auto-register project and session (broadcasts will be queued)
   await autoRegister();
-
-  // Start watching conversation JSONL files
-  conversationWatcher.start(process.cwd());
 
   // Create MCP server
   const server = new McpServer({
@@ -166,35 +143,24 @@ async function main(): Promise<void> {
 
   // Start periodic dead session cleanup
   const cleanupInterval = setInterval(async () => {
-    const cleaned = await cleanupDeadSessions(isProcessAlive);
-    if (cleaned > 0) {
-      console.error(`Periodic cleanup: removed ${cleaned} dead session(s)`);
-    }
+    await cleanupDeadSessions(isProcessAlive);
   }, CLEANUP_INTERVAL_MS);
 
   // Handle graceful shutdown
   const shutdown = async () => {
-    console.error('Shutting down...');
-
-    // Clear cleanup interval
     clearInterval(cleanupInterval);
 
-    // Mark current session as disconnected and broadcast
     const currentSession = getCurrentSession();
     if (currentSession) {
-      // Broadcast disconnection event first
       const disconnectEvent: SessionDisconnectedEvent = {
         type: 'session:disconnected',
         timestamp: new Date().toISOString(),
         payload: { id: currentSession.id, projectId: currentSession.projectId },
       };
       broadcaster.broadcast(disconnectEvent);
-
       await disconnectSession(currentSession.id);
-      console.error(`Disconnected session: ${currentSession.id}`);
     }
 
-    conversationWatcher.stop();
     broadcaster.disconnect();
     closeDatabase();
     process.exit(0);
@@ -209,7 +175,6 @@ async function main(): Promise<void> {
 
   // Connect and run
   await server.connect(transport);
-  console.error(`${SERVER_NAME} v${SERVER_VERSION} started`);
 }
 
 main().catch((error) => {

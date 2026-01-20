@@ -49,6 +49,10 @@ interface ProjectState {
   handleSessionUpdated: (session: Session) => void;
   handleSessionDisconnected: (id: string) => void;
 
+  // Project actions
+  deleteProject: (id: string) => Promise<void>;
+  createProject: (workingDirectory: string) => Promise<void>;
+
   // Ticket actions
   updateTicket: (id: string, updates: { title: string; description?: string; status: TicketStatus; priority: TicketPriority }) => Promise<void>;
   deleteTicket: (id: string) => Promise<void>;
@@ -230,6 +234,52 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           : p
       );
       set({ projects: updatedProjects });
+    }
+  },
+
+  // Project actions
+  deleteProject: async (id) => {
+    try {
+      await invoke('delete_project', { id });
+      const { projects, selectedProjectId } = get();
+      set({
+        projects: projects.filter((p) => p.id !== id),
+        selectedProjectId: selectedProjectId === id ? null : selectedProjectId,
+        tickets: selectedProjectId === id ? [] : get().tickets,
+      });
+    } catch (err) {
+      console.error('Failed to delete project:', err);
+      throw err;
+    }
+  },
+
+  createProject: async (workingDirectory) => {
+    try {
+      // Extract folder name as project name
+      const name = workingDirectory.split(/[/\\]/).filter(Boolean).pop() || 'New Project';
+      const project = await invoke<Project>('create_project', {
+        name,
+        workingDirectory,
+      });
+      const { projects } = get();
+      // Check if project already exists (upsert case)
+      if (!projects.some((p) => p.id === project.id)) {
+        const summary: ProjectSummary = {
+          id: project.id,
+          name: project.name,
+          workingDirectory: project.workingDirectory,
+          ticketCount: 0,
+          activeSessionCount: 0,
+          pendingTickets: 0,
+          inProgressTickets: 0,
+          completedTickets: 0,
+        };
+        set({ projects: [...projects, summary] });
+      }
+      set({ selectedProjectId: project.id });
+    } catch (err) {
+      console.error('Failed to create project:', err);
+      throw err;
     }
   },
 

@@ -30,6 +30,8 @@ import {
   ListTodoIcon,
   CalendarIcon,
   UserIcon,
+  RefreshCwIcon,
+  WrenchIcon,
 } from 'lucide-react';
 
 interface KanbanBoardProps {
@@ -40,6 +42,7 @@ interface KanbanBoardProps {
 
 const COLUMNS = [
   { id: 'pending', label: 'Pending', icon: CircleIcon, color: 'text-muted-foreground' },
+  { id: 'blocked', label: 'Blocked', icon: AlertTriangleIcon, color: 'text-warning' },
   { id: 'in_progress', label: 'In Progress', icon: ClockIcon, color: 'text-info' },
   { id: 'completed', label: 'Completed', icon: CheckCircleIcon, color: 'text-success' },
 ] as const;
@@ -86,6 +89,10 @@ const getTypeIcon = (type: string) => {
       return BookOpenIcon;
     case 'epic':
       return LayersIcon;
+    case 'refactor':
+      return RefreshCwIcon;
+    case 'chore':
+      return WrenchIcon;
     default:
       return ListTodoIcon;
   }
@@ -106,9 +113,26 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
   const [editingTicket, setEditingTicket] = useState<Ticket | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
 
+  // Helper to check if ticket has unresolved blockers
+  const hasUnresolvedBlockers = (ticket: Ticket) => {
+    return ticket.blockedBy?.some(blockerId => {
+      const blocker = findTicketById(tickets, blockerId);
+      if (!blocker) return false;
+      return blocker.status !== 'completed' && blocker.status !== 'archived';
+    }) ?? false;
+  };
+
   const getTicketsByStatus = (status: string) => {
     if (status === 'in_progress') {
       return tickets.filter((t) => t.status === 'in_progress' || t.status === 'claimed');
+    }
+    if (status === 'blocked') {
+      // Pending tickets with unresolved blockers
+      return tickets.filter((t) => t.status === 'pending' && hasUnresolvedBlockers(t));
+    }
+    if (status === 'pending') {
+      // Pending tickets without blockers
+      return tickets.filter((t) => t.status === 'pending' && !hasUnresolvedBlockers(t));
     }
     return tickets.filter((t) => t.status === status);
   };
@@ -167,14 +191,7 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
                     </div>
                   ) : (
                     columnTickets.map((ticket) => {
-                      // Check for unresolved blockers (ignore deleted/archived/completed)
-                      const hasUnresolvedBlockers = ticket.blockedBy?.some(blockerId => {
-                        const blocker = findTicketById(tickets, blockerId);
-                        // Not found = deleted, so not a blocker
-                        if (!blocker) return false;
-                        // Completed or archived = resolved
-                        return blocker.status !== 'completed' && blocker.status !== 'archived';
-                      });
+                      const isBlocked = hasUnresolvedBlockers(ticket);
                       const blocksCount = ticket.blocks?.length || 0;
                       const TypeIcon = getTypeIcon(ticket.type);
                       const checklistTotal = ticket.checklist?.length || 0;
@@ -189,7 +206,7 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
                               'group w-full text-left px-3 py-2.5 rounded-lg transition-all duration-150',
                               'bg-card/80 hover:bg-card border border-border/40 hover:border-border/80',
                               selectedTicketId === ticket.id && 'ring-1 ring-primary/50 border-primary/50 bg-card',
-                              hasUnresolvedBlockers && 'border-l-2 border-l-warning',
+                              isBlocked && 'border-l-2 border-l-warning',
                               (ticket.status === 'in_progress' || ticket.status === 'claimed') && 'gradient-border-animated border-transparent'
                             )}
                           >
@@ -203,6 +220,8 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
                                 ticket.type === 'story' && 'text-success',
                                 ticket.type === 'epic' && 'text-chart-5',
                                 ticket.type === 'task' && 'text-muted-foreground',
+                                ticket.type === 'refactor' && 'text-warning',
+                                ticket.type === 'chore' && 'text-muted-foreground',
                               )}>
                                 <TypeIcon className="w-3.5 h-3.5" />
                                 <span className="capitalize">{ticket.type}</span>
@@ -231,7 +250,7 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
                                 </span>
                               )}
                               {/* Dependency indicators */}
-                              {hasUnresolvedBlockers && (
+                              {isBlocked && (
                                 <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning/20 text-warning">
                                   <AlertTriangleIcon className="w-3.5 h-3.5" />
                                   <span>Blocked</span>

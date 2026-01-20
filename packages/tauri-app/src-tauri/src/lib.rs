@@ -1,7 +1,9 @@
 mod commands;
 mod database;
+mod terminal;
 mod websocket;
 
+use terminal::TerminalManager;
 use websocket::WebSocketHub;
 use std::time::Duration;
 
@@ -12,6 +14,8 @@ const CLEANUP_INTERVAL_SECS: u64 = 10;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(TerminalManager::new())
         .setup(|app| {
             println!("Awesome Claude started");
 
@@ -51,6 +55,17 @@ pub fn run() {
             commands::cleanup_dead_sessions,
             commands::update_ticket,
             commands::delete_ticket,
+            commands::create_project,
+            commands::delete_project,
+            commands::open_claude_terminal,
+            commands::terminal_create,
+            commands::terminal_attach,
+            commands::terminal_detach,
+            commands::terminal_write,
+            commands::terminal_resize,
+            commands::terminal_kill,
+            commands::terminal_list,
+            commands::list_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

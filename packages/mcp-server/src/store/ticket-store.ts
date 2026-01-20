@@ -9,9 +9,7 @@ import type {
   UpdateTicketInput,
   TicketResult,
   ChecklistItem,
-  TicketComment,
   TicketTag,
-  CommentType,
 } from '@awesome-claude/shared';
 
 // Helper to convert DB row to Ticket type
@@ -28,7 +26,6 @@ function toTicket(row: typeof tickets.$inferSelect): Ticket {
     blockedBy: row.blockedBy ? JSON.parse(row.blockedBy) : undefined,
     blocks: row.blocks ? JSON.parse(row.blocks) : undefined,
     checklist: row.checklist ? JSON.parse(row.checklist) : undefined,
-    comments: row.comments ? JSON.parse(row.comments) : undefined,
     tags: row.tags ? JSON.parse(row.tags) : undefined,
     category: row.category as Ticket['category'] ?? undefined,
     claimedBy: row.claimedBy ?? undefined,
@@ -60,7 +57,6 @@ export async function createTicket(data: CreateTicketInput): Promise<Ticket> {
     blockedBy: data.blockedBy ? JSON.stringify(data.blockedBy) : null,
     blocks: null,
     checklist: data.checklist ? JSON.stringify(data.checklist) : null,
-    comments: null,
     tags: data.tags ? JSON.stringify(data.tags) : null,
     category: data.category ?? null,
     claimedBy: null,
@@ -145,22 +141,48 @@ export async function listTickets(
   return filtered.map(toTicket);
 }
 
-// List available tickets (pending status)
+// Check if a ticket is blocked by any uncompleted ticket
+async function isTicketBlocked(ticketId: string, blockedBy: string[] | undefined): Promise<boolean> {
+  if (!blockedBy || blockedBy.length === 0) return false;
+
+  const db = getDb();
+  for (const blockerId of blockedBy) {
+    const blocker = await db.select({ status: tickets.status })
+      .from(tickets).where(eq(tickets.id, blockerId)).get();
+    // Blocker exists and is not completed/archived = still blocking
+    if (blocker && blocker.status !== 'completed' && blocker.status !== 'archived') {
+      return true;
+    }
+  }
+  return false;
+}
+
+// List available tickets (pending status, not blocked)
 export async function listAvailableTickets(projectId: string): Promise<Ticket[]> {
   const db = getDb();
   const rows = await db.select().from(tickets)
     .where(and(eq(tickets.projectId, projectId), eq(tickets.status, 'pending')))
     .all();
 
+  // Filter out blocked tickets
+  const available: typeof rows = [];
+  for (const row of rows) {
+    const blockedBy = row.blockedBy ? JSON.parse(row.blockedBy) : undefined;
+    const blocked = await isTicketBlocked(row.id, blockedBy);
+    if (!blocked) {
+      available.push(row);
+    }
+  }
+
   const priorityOrder = { urgent: 0, high: 1, medium: 2, low: 3 };
-  rows.sort((a, b) => {
+  available.sort((a, b) => {
     const pa = priorityOrder[a.priority as keyof typeof priorityOrder] ?? 2;
     const pb = priorityOrder[b.priority as keyof typeof priorityOrder] ?? 2;
     if (pa !== pb) return pa - pb;
     return a.createdAt.localeCompare(b.createdAt);
   });
 
-  return rows.map(toTicket);
+  return available.map(toTicket);
 }
 
 // Update ticket
@@ -210,6 +232,10 @@ export async function updateTicket(id: string, data: UpdateTicketInput): Promise
 export async function claimTicket(ticketId: string, sessionId: string, projectId?: string): Promise<Ticket | null> {
   const existing = await getTicket(ticketId, projectId);
   if (!existing || existing.status !== 'pending') return null;
+
+  // Check if ticket is blocked
+  const blocked = await isTicketBlocked(existing.id, existing.blockedBy);
+  if (blocked) return null;
 
   const db = getDb();
   const now = new Date().toISOString();
@@ -476,78 +502,6 @@ async function updateBlocksReferences(blockingTicketIds: string[], blockedTicket
   }
 }
 
-// Comment operations
-export async function addComment(
-  ticketId: string,
-  authorId: string,
-  content: string,
-  type: CommentType = 'comment',
-  authorName?: string
-): Promise<Ticket | null> {
-  const existing = await getTicket(ticketId);
-  if (!existing) return null;
-
-  const db = getDb();
-  const now = new Date().toISOString();
-  const newComment: TicketComment = {
-    id: uuidv4(),
-    authorId,
-    authorName,
-    content,
-    type,
-    createdAt: now,
-  };
-  const comments = [...(existing.comments || []), newComment];
-
-  await db.update(tickets)
-    .set({ comments: JSON.stringify(comments), updatedAt: now })
-    .where(eq(tickets.id, ticketId))
-    .run();
-
-  return getTicket(ticketId);
-}
-
-export async function updateComment(
-  ticketId: string,
-  commentId: string,
-  content: string
-): Promise<Ticket | null> {
-  const existing = await getTicket(ticketId);
-  if (!existing || !existing.comments) return null;
-
-  const db = getDb();
-  const now = new Date().toISOString();
-  const comments = existing.comments.map(comment => {
-    if (comment.id === commentId) {
-      return { ...comment, content, updatedAt: now };
-    }
-    return comment;
-  });
-
-  await db.update(tickets)
-    .set({ comments: JSON.stringify(comments), updatedAt: now })
-    .where(eq(tickets.id, ticketId))
-    .run();
-
-  return getTicket(ticketId);
-}
-
-export async function deleteComment(ticketId: string, commentId: string): Promise<Ticket | null> {
-  const existing = await getTicket(ticketId);
-  if (!existing || !existing.comments) return null;
-
-  const db = getDb();
-  const now = new Date().toISOString();
-  const comments = existing.comments.filter(comment => comment.id !== commentId);
-
-  await db.update(tickets)
-    .set({ comments: comments.length > 0 ? JSON.stringify(comments) : null, updatedAt: now })
-    .where(eq(tickets.id, ticketId))
-    .run();
-
-  return getTicket(ticketId);
-}
-
 // Tag operations
 export async function addTag(ticketId: string, name: string, color?: string): Promise<Ticket | null> {
   const existing = await getTicket(ticketId);
@@ -657,7 +611,7 @@ export async function archiveOldCompletedTickets(projectId: string): Promise<num
 
   for (const ticket of toArchive) {
     await db.update(tickets)
-      .set({ status: 'archived', updatedAt: now })
+      .set({ status: 'archived', claimedBy: null, claimedAt: null, updatedAt: now })
       .where(eq(tickets.id, ticket.id))
       .run();
   }

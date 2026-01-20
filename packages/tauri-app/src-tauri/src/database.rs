@@ -337,6 +337,61 @@ pub fn delete_ticket(id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn create_project(name: &str, working_directory: &str) -> Result<Project> {
+    let conn = get_connection()?;
+
+    // Check if project already exists for this working directory
+    let existing: Option<Project> = conn
+        .query_row(
+            "SELECT id, name, description, working_directory, created_at, updated_at, metadata FROM projects WHERE working_directory = ?",
+            [working_directory],
+            |row| {
+                Ok(Project {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    working_directory: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    metadata: row.get(6)?,
+                })
+            },
+        )
+        .ok();
+
+    if let Some(project) = existing {
+        return Ok(project);
+    }
+
+    // Create new project
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO projects (id, name, description, working_directory, created_at, updated_at, metadata) VALUES (?, ?, NULL, ?, ?, ?, NULL)",
+        [&id, name, working_directory, &now, &now],
+    )?;
+
+    Ok(Project {
+        id,
+        name: name.to_string(),
+        description: None,
+        working_directory: working_directory.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+        metadata: None,
+    })
+}
+
+pub fn delete_project(id: &str) -> Result<()> {
+    let conn = get_connection()?;
+    // Cascade delete: tickets and sessions first
+    conn.execute("DELETE FROM tickets WHERE project_id = ?", [id])?;
+    conn.execute("DELETE FROM sessions WHERE project_id = ?", [id])?;
+    conn.execute("DELETE FROM projects WHERE id = ?", [id])?;
+    Ok(())
+}
+
 /// Mark a session as disconnected by ID. Returns (project_id,) on success.
 pub fn mark_session_disconnected(session_id: &str) -> Result<(String,)> {
     let conn = get_connection()?;

@@ -16,7 +16,7 @@ import type {
 
 const STATUS_ENUM = z.enum(['pending', 'claimed', 'in_progress', 'completed', 'failed']);
 const PRIORITY_ENUM = z.enum(['low', 'medium', 'high', 'urgent']);
-const TYPE_ENUM = z.enum(['task', 'bug', 'feature', 'epic', 'story']);
+const TYPE_ENUM = z.enum(['task', 'bug', 'feature', 'epic', 'story', 'refactor', 'chore']);
 const CATEGORY_ENUM = z.enum([
   'frontend', 'backend', 'database', 'api', 'ui',
   'testing', 'docs', 'devops', 'security', 'performance',
@@ -326,41 +326,6 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
       } as TicketDeletedEvent);
 
       return { content: [{ type: 'text', text: 'Deleted' }] };
-    }
-  );
-
-  // Add comment
-  server.tool(
-    'ticket_add_comment',
-    'Add comment to ticket',
-    {
-      ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
-      content: z.string(),
-      type: z.enum(['comment', 'progress', 'system']).optional(),
-    },
-    async ({ ticketId, content, type }) => {
-      const sessionId = getCurrentSessionId();
-      const projectId = getCurrentProjectId();
-      if (!sessionId) {
-        return { content: [{ type: 'text', text: 'No session' }], isError: true };
-      }
-
-      const session = await sessionStore.getSession(sessionId);
-      const resolvedTicket = await ticketStore.getTicket(ticketId, projectId || undefined);
-      if (!resolvedTicket) {
-        return { content: [{ type: 'text', text: 'Not found' }], isError: true };
-      }
-
-      const ticket = await ticketStore.addComment(resolvedTicket.id, sessionId, content, type || 'comment', session?.name);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Failed to add comment' }], isError: true };
-      }
-
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:updated', timestamp: new Date().toISOString(), payload: ticket,
-      } as TicketUpdatedEvent);
-
-      return { content: [{ type: 'text', text: 'Comment added' }] };
     }
   );
 

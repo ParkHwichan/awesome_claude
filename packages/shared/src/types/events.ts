@@ -48,11 +48,7 @@ export type EventType =
   | 'connection:established'
   | 'connection:error'
   | 'ping'
-  | 'pong'
-  // Conversation events
-  | 'conversation:message'
-  // Debug events
-  | 'debug:log';
+  | 'pong';
 
 export interface BaseEvent {
   type: EventType;
@@ -329,20 +325,6 @@ export type TicketEvent =
   | TicketFailedEvent
   | TicketStatusChangedEvent;
 
-// Conversation events
-export interface ConversationMessageEvent extends BaseEvent {
-  type: 'conversation:message';
-  payload: {
-    sessionId: string;
-    uuid: string;
-    role: 'user' | 'assistant';
-    content: string;
-    cwd?: string;
-  };
-}
-
-export type ConversationEvent = ConversationMessageEvent;
-
 export type AppEvent =
   | ProjectEvent
   | SessionEvent
@@ -350,8 +332,7 @@ export type AppEvent =
   | WorkflowEvent
   | TaskEvent
   | TodoEvent
-  | ConnectionEvent
-  | ConversationEvent;
+  | ConnectionEvent;
 
 // Event handler types
 export type EventHandler<T extends AppEvent> = (event: T) => void;

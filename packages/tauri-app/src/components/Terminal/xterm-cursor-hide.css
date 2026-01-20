@@ -1,0 +1,11 @@
+/* Hide xterm.js cursor completely - Claude CLI has its own TUI with input area */
+.xterm-cursor,
+.xterm-cursor-layer,
+.xterm-cursor-block,
+.xterm-cursor-bar,
+.xterm-cursor-underline,
+.xterm-cursor-outline {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
