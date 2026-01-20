@@ -13,6 +13,7 @@ export interface TerminalInstance {
   childProcesses?: ChildProcessInfo[];
   title: string;
   color?: string;
+  iconIndex?: number; // Index for animal icon (1, 10-44)
 }
 
 // A panel group contains tabs, each tab has one terminal

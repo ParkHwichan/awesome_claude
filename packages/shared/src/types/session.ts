@@ -23,6 +23,9 @@ export interface Session {
   ticketsCompleted: number;
   ticketsFailed: number;
 
+  // Visual identifier
+  iconIndex?: number; // Animal icon index for visual identification
+
   // Additional data
   metadata?: SessionMetadata;
 }

@@ -50,7 +50,7 @@ export function closeDatabase(): void {
   }
 }
 
-const CURRENT_VERSION = 7;
+const CURRENT_VERSION = 8;
 
 function runMigrations(libsqlClient: Client, dbPath: string): void {
   // Use a version file since libsql client is async-only
@@ -228,6 +228,19 @@ function runMigrations(libsqlClient: Client, dbPath: string): void {
       console.error('Migration 7 error (may be safe to ignore if index exists):', e);
     }
     version = 7;
+  }
+
+  // Migration for session icon_index
+  if (version < 8) {
+    console.error('Running migration to version 8: Adding icon_index column to sessions');
+    try {
+      libsqlClient.executeMultiple(`
+        ALTER TABLE sessions ADD COLUMN icon_index INTEGER;
+      `);
+    } catch {
+      // Column may already exist
+    }
+    version = 8;
   }
 
   writeFileSync(versionFile, String(CURRENT_VERSION));

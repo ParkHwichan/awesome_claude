@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Header } from './components/Layout';
 import { ProjectSidebar } from './components/ProjectSidebar';
@@ -115,7 +116,10 @@ function App() {
       ),
       subscribe<ConversationMessageEvent>('conversation:message', (e) =>
         addMessage({
-          ...e.payload,
+          sessionId: e.payload.sessionId,
+          uuid: crypto.randomUUID(),
+          role: e.payload.role === 'system' ? 'assistant' : e.payload.role,
+          content: e.payload.content,
           timestamp: e.timestamp,
         })
       ),
@@ -173,6 +177,17 @@ function App() {
     deleteProject(id);
   }, [deleteProject]);
 
+  const handleDisconnectSession = useCallback(async (sessionId: string) => {
+    try {
+      await invoke('disconnect_session', { sessionId });
+      // The store will be updated via the next loadInitialData call
+      // or we can manually remove it immediately
+      handleSessionDisconnected(sessionId);
+    } catch (err) {
+      console.error('Failed to disconnect session:', err);
+    }
+  }, [handleSessionDisconnected]);
+
   const handleCreateProject = useCallback(async () => {
     const selected = await open({
       directory: true,
@@ -210,6 +225,7 @@ function App() {
               onSelectView={setCurrentView}
               onDeleteProject={handleDeleteProject}
               onCreateProject={handleCreateProject}
+              onDisconnectSession={handleDisconnectSession}
             />
           </div>
         </div>
@@ -268,6 +284,7 @@ function App() {
                     key={selectedProject.id}
                     workingDir={selectedProject.workingDirectory}
                     projectName={selectedProject.name}
+                    sessions={sessions.filter(s => s.projectId === selectedProject.id)}
                     onTabsChange={handleTerminalTabsChange}
                   />
                 </div>

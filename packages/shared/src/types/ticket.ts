@@ -12,6 +12,18 @@ export interface ChecklistItem {
   completedAt?: string;
 }
 
+export type TicketCommentType = 'comment' | 'progress' | 'system';
+
+export interface TicketComment {
+  id: string;
+  authorId: string;       // session ID or user identifier
+  authorName?: string;    // display name
+  type: TicketCommentType;
+  content: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 /**
  * Tag - Categorization labels with optional color
  */
@@ -60,6 +72,9 @@ export interface Ticket {
   // Tags & Categories
   tags?: TicketTag[];
   category?: TicketCategory;
+
+  // Comments
+  comments?: TicketComment[];
 
   // Assignment
   claimedBy?: string;  // session ID

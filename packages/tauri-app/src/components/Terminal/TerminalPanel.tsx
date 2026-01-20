@@ -33,6 +33,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { XtermTerminal } from './XtermTerminal';
+import { AnimalIcon } from './AnimalIcon';
 import {
   type TerminalInstance,
   type PanelGroup,
@@ -64,11 +65,15 @@ export interface LegacyTerminalTab {
   childProcesses?: ChildProcessInfo[];
   title: string;
   color?: string;
+  iconIndex?: number;
 }
+
+import type { Session } from '@awesome-claude/shared';
 
 interface TerminalPanelProps {
   workingDir: string;
   projectName?: string;
+  sessions?: Session[];
   onClose?: () => void;
   onTabsChange?: (tabs: LegacyTerminalTab[]) => void;
 }
@@ -90,7 +95,7 @@ interface TerminalSessionInfo {
 interface SavedTerminalState {
   layout: LayoutNode | null;
   panelGroups: Array<[string, PanelGroup]>;
-  terminals: Array<[string, { id: string; sessionId: string; title: string; color?: string }]>;
+  terminals: Array<[string, { id: string; sessionId: string; title: string; color?: string; iconIndex?: number }]>;
   activeGroupId: string | null;
 }
 
@@ -118,7 +123,7 @@ function loadTerminalState(workingDir: string): SavedTerminalState | null {
   return null;
 }
 
-export function TerminalPanel({ workingDir, projectName, onClose, onTabsChange }: TerminalPanelProps) {
+export function TerminalPanel({ workingDir, projectName, sessions = [], onClose, onTabsChange }: TerminalPanelProps) {
   // Layout of panel groups
   const [layout, setLayout] = useState<LayoutNode | null>(null);
   // Panel groups (each has its own tabs)
@@ -149,6 +154,7 @@ export function TerminalPanel({ workingDir, projectName, onClose, onTabsChange }
         childProcesses: terminal.childProcesses,
         title: terminal.title,
         color: terminal.color,
+        iconIndex: terminal.iconIndex,
       });
     });
     onTabsChange?.(legacyTabs);
@@ -325,7 +331,7 @@ export function TerminalPanel({ workingDir, projectName, onClose, onTabsChange }
       panelGroups: Array.from(panelGroups.entries()),
       terminals: Array.from(terminals.entries()).map(([id, t]) => [
         id,
-        { id: t.id, sessionId: t.sessionId, title: t.title, color: t.color },
+        { id: t.id, sessionId: t.sessionId, title: t.title, color: t.color, iconIndex: t.iconIndex },
       ]),
       activeGroupId,
     };
@@ -631,6 +637,19 @@ export function TerminalPanel({ workingDir, projectName, onClose, onTabsChange }
     setDropTarget(null);
   }, [draggedTab, panelGroups, layout]);
 
+  // Find matching session for a terminal by ppid
+  const findMatchingSession = useCallback((terminal: TerminalInstance | undefined): Session | undefined => {
+    if (!terminal || sessions.length === 0) return undefined;
+
+    // Collect all PIDs from the terminal (shellPid + childProcesses)
+    const terminalPids = new Set<number>();
+    if (terminal.shellPid) terminalPids.add(terminal.shellPid);
+    terminal.childProcesses?.forEach(p => terminalPids.add(p.pid));
+
+    // Find session where ppid matches any terminal pid
+    return sessions.find(s => terminalPids.has(s.ppid));
+  }, [sessions]);
+
   // Render a single panel group
   const renderPanelGroup = useCallback((groupId: string) => {
     const group = panelGroups.get(groupId);
@@ -655,7 +674,12 @@ export function TerminalPanel({ workingDir, projectName, onClose, onTabsChange }
               className="flex items-center"
               onDragLeave={handleDragLeave}
             >
-              {group.tabs.map((tab, index) => (
+              {group.tabs.map((tab, index) => {
+                const tabTerminal = terminals.get(tab.terminalId);
+                const matchedSession = findMatchingSession(tabTerminal);
+                // Only show animal icon if matched with MCP session
+                const displayIconIndex = matchedSession?.iconIndex;
+                return (
                 <Fragment key={tab.id}>
                   {/* Drop indicator before tab */}
                   <div
@@ -692,7 +716,11 @@ export function TerminalPanel({ workingDir, projectName, onClose, onTabsChange }
                             style={{ backgroundColor: tab.color }}
                           />
                         )}
-                        <TerminalIcon className="w-3 h-3 shrink-0" />
+                        {displayIconIndex ? (
+                          <AnimalIcon index={displayIconIndex} size={14} className="shrink-0" />
+                        ) : (
+                          <TerminalIcon className="w-3 h-3 shrink-0" />
+                        )}
                         <span className="truncate max-w-[80px]">{tab.title}</span>
                         <span
                           onClick={(e) => {
@@ -747,7 +775,8 @@ export function TerminalPanel({ workingDir, projectName, onClose, onTabsChange }
                     </ContextMenuContent>
                   </ContextMenu>
                 </Fragment>
-              ))}
+              );
+              })}
               {/* Drop indicator after last tab */}
               <div
                 className={cn(
@@ -819,6 +848,7 @@ export function TerminalPanel({ workingDir, projectName, onClose, onTabsChange }
     handleDragOver,
     handleDragLeave,
     handleDrop,
+    findMatchingSession,
   ]);
 
   // Render layout recursively

@@ -25,6 +25,7 @@ export const sessions = sqliteTable('sessions', {
   currentTicketId: text('current_ticket_id'),
   ticketsCompleted: integer('tickets_completed').notNull().default(0),
   ticketsFailed: integer('tickets_failed').notNull().default(0),
+  iconIndex: integer('icon_index'), // Animal icon index for visual identification
   metadata: text('metadata'), // JSON string
 });
 

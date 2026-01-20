@@ -15,6 +15,19 @@ pub fn get_connection() -> Result<Connection> {
     Connection::open(db_path)
 }
 
+/// Run database migrations to ensure schema is up to date
+pub fn run_migrations() -> Result<()> {
+    let conn = get_connection()?;
+
+    // Ensure icon_index column exists in sessions table
+    let _ = conn.execute(
+        "ALTER TABLE sessions ADD COLUMN icon_index INTEGER",
+        [],
+    ); // Ignore error if column already exists
+
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
@@ -55,6 +68,7 @@ pub struct Session {
     pub current_ticket_id: Option<String>,
     pub tickets_completed: i32,
     pub tickets_failed: i32,
+    pub icon_index: Option<i32>,
     pub metadata: Option<String>,
 }
 
@@ -129,7 +143,7 @@ pub fn list_sessions() -> Result<Vec<Session>> {
     let conn = get_connection()?;
     let mut stmt = conn.prepare(
         "SELECT id, project_id, ppid, name, model, status, connected_at, last_active_at,
-                disconnected_at, current_ticket_id, tickets_completed, tickets_failed, metadata
+                disconnected_at, current_ticket_id, tickets_completed, tickets_failed, icon_index, metadata
          FROM sessions
          WHERE status != 'disconnected'
          ORDER BY last_active_at DESC"
@@ -149,7 +163,8 @@ pub fn list_sessions() -> Result<Vec<Session>> {
             current_ticket_id: row.get(9)?,
             tickets_completed: row.get(10)?,
             tickets_failed: row.get(11)?,
-            metadata: row.get(12)?,
+            icon_index: row.get(12)?,
+            metadata: row.get(13)?,
         })
     })?;
 
@@ -161,17 +176,21 @@ pub fn cleanup_dead_sessions() -> Result<usize> {
 
     // Get all active sessions
     let mut stmt = conn.prepare(
-        "SELECT id, ppid FROM sessions WHERE status != 'disconnected'"
+        "SELECT id, ppid, name FROM sessions WHERE status != 'disconnected'"
     )?;
 
-    let sessions: Vec<(String, i32)> = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?))
+    let sessions: Vec<(String, i32, Option<String>)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
     })?.filter_map(|r| r.ok()).collect();
 
+    if !sessions.is_empty() {
+        println!("[Cleanup] Checking {} active sessions...", sessions.len());
+    }
+
     let mut cleaned = 0;
-    for (id, ppid) in sessions {
-        // Clean up if ppid is 0/invalid OR if process is dead
-        if ppid <= 0 || !is_process_alive(ppid as u32) {
+    for (id, ppid, name) in sessions {
+        let alive = ppid > 0 && is_process_alive(ppid as u32);
+        if !alive {
             // Release claimed tickets back to pending
             conn.execute(
                 "UPDATE tickets SET claimed_by = NULL, claimed_at = NULL, status = 'pending'
@@ -184,8 +203,10 @@ pub fn cleanup_dead_sessions() -> Result<usize> {
                 "UPDATE sessions SET status = 'disconnected', disconnected_at = datetime('now'), current_ticket_id = NULL WHERE id = ?",
                 [&id]
             )?;
-            println!("[Cleanup] Dead session: {} (ppid: {})", id, ppid);
+            println!("[Cleanup] Dead session: {} '{}' (ppid: {} - process not found)", id, name.unwrap_or_default(), ppid);
             cleaned += 1;
+        } else {
+            println!("[Cleanup] Session alive: {} '{}' (ppid: {})", id, name.unwrap_or_default(), ppid);
         }
     }
 
@@ -199,7 +220,9 @@ fn is_process_alive(pid: u32) -> bool {
 
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        // Check if handle is null (invalid)
         if handle.is_null() {
+            println!("[ProcessCheck] PID {} - OpenProcess failed (access denied or not found)", pid);
             return false;
         }
 
@@ -207,7 +230,17 @@ fn is_process_alive(pid: u32) -> bool {
         let result = GetExitCodeProcess(handle, &mut exit_code);
         CloseHandle(handle);
 
-        result != 0 && exit_code == (STILL_ACTIVE as u32)
+        if result == 0 {
+            println!("[ProcessCheck] PID {} - GetExitCodeProcess failed", pid);
+            return false;
+        }
+
+        // STILL_ACTIVE = 259
+        let is_alive = exit_code == (STILL_ACTIVE as u32);
+        if !is_alive {
+            println!("[ProcessCheck] PID {} - Process exited with code {}", pid, exit_code);
+        }
+        is_alive
     }
 }
 
@@ -403,9 +436,16 @@ pub fn mark_session_disconnected(session_id: &str) -> Result<(String,)> {
         |row| row.get(0),
     )?;
 
+    // Release any claimed tickets
+    conn.execute(
+        "UPDATE tickets SET claimed_by = NULL, claimed_at = NULL, status = 'pending'
+         WHERE claimed_by = ? AND status NOT IN ('completed', 'failed', 'archived')",
+        [session_id],
+    )?;
+
     // Update session status
     conn.execute(
-        "UPDATE sessions SET status = 'disconnected', disconnected_at = datetime('now') WHERE id = ?",
+        "UPDATE sessions SET status = 'disconnected', disconnected_at = datetime('now'), current_ticket_id = NULL WHERE id = ?",
         [session_id],
     )?;
 

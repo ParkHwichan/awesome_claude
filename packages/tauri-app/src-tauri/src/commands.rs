@@ -48,6 +48,13 @@ pub async fn cleanup_dead_sessions() -> Result<usize, String> {
 }
 
 #[tauri::command]
+pub async fn disconnect_session(session_id: String) -> Result<String, String> {
+    let (project_id,) = database::mark_session_disconnected(&session_id)
+        .map_err(|e| e.to_string())?;
+    Ok(project_id)
+}
+
+#[tauri::command]
 pub async fn update_ticket(
     id: String,
     title: String,

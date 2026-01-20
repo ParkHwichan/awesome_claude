@@ -27,6 +27,10 @@ export type EventType =
   | 'ticket:completed'
   | 'ticket:failed'
   | 'ticket:status_changed'
+  // Conversation events
+  | 'conversation:message'
+  // Debug events
+  | 'debug:log'
   // Legacy workflow events
   | 'workflow:created'
   | 'workflow:updated'
@@ -325,6 +329,28 @@ export type TicketEvent =
   | TicketFailedEvent
   | TicketStatusChangedEvent;
 
+// Conversation events
+export interface ConversationMessageEvent extends BaseEvent {
+  type: 'conversation:message';
+  payload: {
+    sessionId: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    metadata?: Record<string, unknown>;
+  };
+}
+
+// Debug events
+export interface DebugLogEvent extends BaseEvent {
+  type: 'debug:log';
+  payload: {
+    sessionId?: string;
+    source?: string;
+    message: string;
+    level?: 'info' | 'warn' | 'error' | 'debug';
+  };
+}
+
 export type AppEvent =
   | ProjectEvent
   | SessionEvent
@@ -332,7 +358,9 @@ export type AppEvent =
   | WorkflowEvent
   | TaskEvent
   | TodoEvent
-  | ConnectionEvent;
+  | ConnectionEvent
+  | ConversationMessageEvent
+  | DebugLogEvent;
 
 // Event handler types
 export type EventHandler<T extends AppEvent> = (event: T) => void;

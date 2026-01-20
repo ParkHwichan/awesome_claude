@@ -7,6 +7,19 @@ import type {
   UpdateSessionInput,
 } from '@awesome-claude/shared';
 
+// Available animal icon indices (1, 10-44)
+const ANIMAL_ICON_INDICES = [
+  1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+  20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+  40, 41, 42, 43, 44,
+];
+
+function getRandomAnimalIcon(): number {
+  const randomIndex = Math.floor(Math.random() * ANIMAL_ICON_INDICES.length);
+  return ANIMAL_ICON_INDICES[randomIndex];
+}
+
 // Helper to convert DB row to Session type
 function toSession(row: typeof sessions.$inferSelect): Session {
   return {
@@ -22,6 +35,7 @@ function toSession(row: typeof sessions.$inferSelect): Session {
     currentTicketId: row.currentTicketId ?? undefined,
     ticketsCompleted: row.ticketsCompleted,
     ticketsFailed: row.ticketsFailed,
+    iconIndex: row.iconIndex ?? undefined,
     metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
   };
 }
@@ -74,6 +88,7 @@ export async function registerSessionByPpid(data: RegisterSessionByPpidInput): P
 
   const now = new Date().toISOString();
   const id = uuidv4();
+  const iconIndex = getRandomAnimalIcon();
 
   const newSession = {
     id,
@@ -86,6 +101,7 @@ export async function registerSessionByPpid(data: RegisterSessionByPpidInput): P
     lastActiveAt: now,
     ticketsCompleted: 0,
     ticketsFailed: 0,
+    iconIndex,
     metadata: data.metadata ? JSON.stringify(data.metadata) : null,
   };
 

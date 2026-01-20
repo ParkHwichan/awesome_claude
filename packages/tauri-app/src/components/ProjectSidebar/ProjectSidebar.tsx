@@ -24,6 +24,7 @@ import {
   AlertTriangleIcon,
   LinkIcon,
   TrashIcon,
+  XCircleIcon,
 } from 'lucide-react';
 import { FileExplorer } from '@/components/FileExplorer';
 
@@ -54,6 +55,7 @@ interface ProjectSidebarProps {
   onSelectView: (view: 'board' | 'terminal') => void;
   onDeleteProject: (id: string) => void;
   onCreateProject: () => void;
+  onDisconnectSession?: (sessionId: string) => void;
 }
 
 export function ProjectSidebar({
@@ -69,6 +71,7 @@ export function ProjectSidebar({
   onSelectView,
   onDeleteProject,
   onCreateProject,
+  onDisconnectSession,
 }: ProjectSidebarProps) {
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const projectSessions = sessions.filter(
@@ -230,34 +233,44 @@ export function ProjectSidebar({
                 {projectSessions.map((session) => {
                   const matchingTerminal = getMatchingTerminal(session);
                   return (
-                    <div
-                      key={session.id}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px]"
-                    >
-                      {/* Color indicator from terminal or status */}
-                      {matchingTerminal?.color ? (
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ backgroundColor: matchingTerminal.color }}
-                        />
-                      ) : (
-                        <span
-                          className={cn(
-                            'w-1.5 h-1.5 rounded-full shrink-0',
-                            session.status === 'working' ? 'bg-primary' :
-                            session.status === 'active' ? 'bg-success' : 'bg-muted-foreground/50'
+                    <ContextMenu key={session.id}>
+                      <ContextMenuTrigger asChild>
+                        <div className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] hover:bg-sidebar-accent cursor-default">
+                          {/* Color indicator from terminal or status */}
+                          {matchingTerminal?.color ? (
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: matchingTerminal.color }}
+                            />
+                          ) : (
+                            <span
+                              className={cn(
+                                'w-1.5 h-1.5 rounded-full shrink-0',
+                                session.status === 'working' ? 'bg-primary' :
+                                session.status === 'active' ? 'bg-success' : 'bg-muted-foreground/50'
+                              )}
+                            />
                           )}
-                        />
-                      )}
-                      <span className="truncate flex-1 text-muted-foreground">
-                        {/* Show terminal name if matched, otherwise session name or ID */}
-                        {matchingTerminal?.title || session.name || session.id.slice(0, 6)}
-                      </span>
-                      {/* Show link icon if matched with terminal */}
-                      {matchingTerminal && (
-                        <LinkIcon className="w-3 h-3 text-muted-foreground/50 shrink-0" />
-                      )}
-                    </div>
+                          <span className="truncate flex-1 text-muted-foreground">
+                            {/* Show terminal name if matched, otherwise session name or ID */}
+                            {matchingTerminal?.title || session.name || session.id.slice(0, 6)}
+                          </span>
+                          {/* Show link icon if matched with terminal */}
+                          {matchingTerminal && (
+                            <LinkIcon className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+                          )}
+                        </div>
+                      </ContextMenuTrigger>
+                      <ContextMenuContent>
+                        <ContextMenuItem
+                          onClick={() => onDisconnectSession?.(session.id)}
+                          className="text-destructive focus:text-destructive"
+                        >
+                          <XCircleIcon className="w-4 h-4 mr-2" />
+                          Disconnect Session
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    </ContextMenu>
                   );
                 })}
               </div>

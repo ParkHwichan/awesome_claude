@@ -19,6 +19,11 @@ pub fn run() {
         .setup(|app| {
             println!("Awesome Claude started");
 
+            // Run database migrations
+            if let Err(e) = database::run_migrations() {
+                eprintln!("Failed to run migrations: {}", e);
+            }
+
             // Start WebSocket hub server
             let app_handle = app.handle().clone();
             let ws_hub = WebSocketHub::new(WEBSOCKET_PORT);
@@ -53,6 +58,7 @@ pub fn run() {
             commands::get_sessions,
             commands::get_tickets,
             commands::cleanup_dead_sessions,
+            commands::disconnect_session,
             commands::update_ticket,
             commands::delete_ticket,
             commands::create_project,
