@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, Fragment, useEffect, useRef } from 'react';
+import { useTerminalStore } from '@/store/terminal-store';
 import { Button } from '@/components/ui/button';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
@@ -29,11 +30,14 @@ import {
   PaletteIcon,
   SplitSquareHorizontalIcon,
   SplitSquareVerticalIcon,
+  SparklesIcon,
+  MonitorIcon,
+  ZapIcon,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { XtermTerminal } from './XtermTerminal';
-import { AnimalIcon } from './AnimalIcon';
+import { AnimalIcon, ANIMAL_ICON_INDICES } from './AnimalIcon';
 import {
   type TerminalInstance,
   type PanelGroup,
@@ -58,24 +62,11 @@ const TAB_COLORS = [
   { name: 'Pink', value: '#ec4899' },
 ] as const;
 
-// For backwards compatibility with App.tsx
-export interface LegacyTerminalTab {
-  sessionId: string;
-  shellPid?: number;
-  childProcesses?: ChildProcessInfo[];
-  title: string;
-  color?: string;
-  iconIndex?: number;
-}
-
-import type { Session } from '@awesome-claude/shared';
-
 interface TerminalPanelProps {
   workingDir: string;
   projectName?: string;
-  sessions?: Session[];
   onClose?: () => void;
-  onTabsChange?: (tabs: LegacyTerminalTab[]) => void;
+  isVisible?: boolean;
 }
 
 let idCounter = 0;
@@ -126,7 +117,9 @@ function loadTerminalState(workingDir: string): SavedTerminalState | null {
   return null;
 }
 
-export function TerminalPanel({ workingDir, projectName, sessions = [], onClose, onTabsChange }: TerminalPanelProps) {
+export function TerminalPanel({ workingDir, projectName, onClose, isVisible = true }: TerminalPanelProps) {
+  const setTerminalTabs = useTerminalStore((state) => state.setTabs);
+
   // Layout of panel groups
   const [layout, setLayout] = useState<LayoutNode | null>(null);
   // Panel groups (each has its own tabs)
@@ -147,26 +140,21 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
   const [draggedTab, setDraggedTab] = useState<{ groupId: string; tabId: string } | null>(null);
   const [dropTarget, setDropTarget] = useState<{ groupId: string; index: number } | null>(null);
 
-  // Notify parent when terminals change
-  useEffect(() => {
-    const legacyTabs: LegacyTerminalTab[] = [];
-    terminals.forEach((terminal) => {
-      legacyTabs.push({
-        sessionId: terminal.sessionId,
-        shellPid: terminal.shellPid,
-        childProcesses: terminal.childProcesses,
-        title: terminal.title,
-        color: terminal.color,
-        iconIndex: terminal.iconIndex,
-      });
-    });
-    onTabsChange?.(legacyTabs);
-  }, [terminals, onTabsChange]);
+  // WebGL toggle state
+  const [webglEnabled, setWebglEnabled] = useState(true);
 
-  // Legacy callback (kept for manual triggers)
-  const notifyTabsChange = useCallback(() => {
-    // Now handled by useEffect above
-  }, []);
+  // Sync terminals to store
+  useEffect(() => {
+    const tabs = Array.from(terminals.values()).map((terminal) => ({
+      sessionId: terminal.sessionId,
+      shellPid: terminal.shellPid,
+      childProcesses: terminal.childProcesses,
+      title: terminal.title,
+      color: terminal.color,
+      iconIndex: terminal.iconIndex,
+    }));
+    setTerminalTabs(tabs);
+  }, [terminals, setTerminalTabs]);
 
   // Create a new panel group with one terminal
   const createPanelGroup = useCallback((): { groupId: string; terminalId: string } => {
@@ -174,11 +162,13 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
     const terminalId = generateId('terminal');
     const tabId = generateId('tab');
     const tabNumber = terminals.size + 1;
+    const iconIndex = ANIMAL_ICON_INDICES[tabNumber % ANIMAL_ICON_INDICES.length];
 
     const newTerminal: TerminalInstance = {
       id: terminalId,
       sessionId: `pending-${Date.now()}`,
       title: `Terminal ${tabNumber}`,
+      iconIndex,
     };
 
     const newTab: PanelTab = {
@@ -226,19 +216,21 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
         // Load saved state from localStorage
         const savedState = loadTerminalState(workingDir);
 
+        // Track which sessions we'll actually use
+        const usedSessionIds = new Set<string>();
+
         if (savedState && savedState.layout) {
           console.log(`[TerminalPanel] Restoring saved layout for ${workingDir}`);
 
           // Restore terminals - match saved sessions with live sessions
           const newTerminals = new Map<string, TerminalInstance>();
-          const usedLiveSessions = new Set<string>();
 
           // First, restore saved terminals that have matching live sessions
           savedState.terminals.forEach(([terminalId, savedTerminal]) => {
             const liveSession = liveSessionMap.get(savedTerminal.sessionId);
             if (liveSession) {
               // Session is still alive - use title/color from backend (source of truth)
-              usedLiveSessions.add(savedTerminal.sessionId);
+              usedSessionIds.add(savedTerminal.sessionId);
               newTerminals.set(terminalId, {
                 id: terminalId,
                 sessionId: savedTerminal.sessionId,
@@ -289,6 +281,20 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
             setPanelGroups(newPanelGroups);
             setLayout(savedState.layout);
             setActiveGroupId(savedState.activeGroupId || newPanelGroups.keys().next().value || null);
+
+            // Kill orphan sessions (sessions in backend not tracked by our state)
+            const orphanSessions = matchingSessions.filter(s => !usedSessionIds.has(s.sessionId));
+            if (orphanSessions.length > 0) {
+              console.log(`[TerminalPanel] Killing ${orphanSessions.length} orphan sessions`);
+              for (const session of orphanSessions) {
+                try {
+                  await invoke('terminal_kill', { sessionId: session.sessionId });
+                  console.log(`[TerminalPanel] Killed orphan session: ${session.sessionId}`);
+                } catch (err) {
+                  console.error(`[TerminalPanel] Failed to kill orphan session ${session.sessionId}:`, err);
+                }
+              }
+            }
             return;
           }
         }
@@ -304,6 +310,7 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
           matchingSessions.forEach((session) => {
             const terminalId = generateId('terminal');
             const tabId = generateId('tab');
+            usedSessionIds.add(session.sessionId);  // Track as used
 
             newTerminals.set(terminalId, {
               id: terminalId,
@@ -332,6 +339,7 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
           setPanelGroups(new Map([[groupId, newGroup]]));
           setLayout(createPanelGroupNode(groupId));
           setActiveGroupId(groupId);
+          // Note: In fallback, we use ALL matching sessions, so no orphans to kill
         }
       } catch (err) {
         console.error('[TerminalPanel] Failed to restore state:', err);
@@ -364,11 +372,13 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
     const terminalId = generateId('terminal');
     const tabId = generateId('tab');
     const tabNumber = terminals.size + 1;
+    const iconIndex = ANIMAL_ICON_INDICES[tabNumber % ANIMAL_ICON_INDICES.length];
 
     const newTerminal: TerminalInstance = {
       id: terminalId,
       sessionId: `pending-${Date.now()}`,
       title: `Terminal ${tabNumber}`,
+      iconIndex,
     };
 
     const newTab: PanelTab = {
@@ -473,8 +483,7 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
       updated.set(terminalId, { ...terminal, sessionId, shellPid });
       return updated;
     });
-    setTimeout(notifyTabsChange, 0);
-  }, [notifyTabsChange]);
+  }, []);
 
   // Handle child processes change
   const handleChildProcessesChange = useCallback((terminalId: string, childProcesses: ChildProcessInfo[]) => {
@@ -490,8 +499,7 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
       updated.set(terminalId, { ...terminal, childProcesses });
       return updated;
     });
-    setTimeout(notifyTabsChange, 0);
-  }, [notifyTabsChange]);
+  }, []);
 
   // Handle terminal exit
   const handleTerminalExit = useCallback((groupId: string, tabId: string) => {
@@ -705,18 +713,86 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
     setDropTarget(null);
   }, [draggedTab, panelGroups, layout]);
 
-  // Find matching session for a terminal by ppid
-  const findMatchingSession = useCallback((terminal: TerminalInstance | undefined): Session | undefined => {
-    if (!terminal || sessions.length === 0) return undefined;
+  // Check if MCP server is running in a terminal
+  const isMcpRunning = useCallback((terminal: TerminalInstance | undefined): boolean => {
+    if (!terminal?.childProcesses?.length) return false;
+    return terminal.childProcesses.some(p =>
+      p.name.toLowerCase().includes('awesome-claude') ||
+      p.cmd.toLowerCase().includes('awesome-claude') ||
+      p.cmd.toLowerCase().includes('mcp-server')
+    );
+  }, []);
 
-    // Collect all PIDs from the terminal (shellPid + childProcesses)
-    const terminalPids = new Set<number>();
-    if (terminal.shellPid) terminalPids.add(terminal.shellPid);
-    terminal.childProcesses?.forEach(p => terminalPids.add(p.pid));
+  // Check if Claude is running in a terminal
+  const isClaudeRunning = useCallback((terminal: TerminalInstance | undefined): boolean => {
+    if (!terminal?.childProcesses?.length) return false;
+    return terminal.childProcesses.some(p =>
+      p.name.toLowerCase().includes('claude') ||
+      p.cmd.toLowerCase().includes('claude')
+    );
+  }, []);
 
-    // Find session where ppid matches any terminal pid
-    return sessions.find(s => terminalPids.has(s.ppid));
-  }, [sessions]);
+  // Get meaningful process labels from child processes
+  const getProcessLabels = useCallback((terminal: TerminalInstance | undefined): string[] => {
+    if (!terminal?.childProcesses?.length) return [];
+
+    const labels: string[] = [];
+    for (const p of terminal.childProcesses) {
+      const cmd = p.cmd.toLowerCase();
+      const name = p.name.toLowerCase();
+
+      // Skip shell, system, and common short-lived processes
+      if (['powershell.exe', 'powershell', 'cmd.exe', 'cmd', 'conhost.exe', 'conhost', 'bash', 'sh', 'zsh', 'git', 'git.exe'].includes(name)) {
+        continue;
+      }
+
+      // Claude Code
+      if (cmd.includes('claude') && (cmd.includes('cli') || name.includes('claude'))) {
+        if (!labels.includes('claude')) labels.push('claude');
+        continue;
+      }
+
+      // MCP server
+      if (cmd.includes('mcp-server') || cmd.includes('awesome-claude')) {
+        if (!labels.includes('mcp')) labels.push('mcp');
+        continue;
+      }
+
+      // Node scripts - extract meaningful name
+      if (name === 'node.exe' || name === 'node') {
+        // Skip intermediate processes
+        if (cmd.includes('npx-cli.js') || cmd.includes('preflight.cjs') || cmd.includes('loader.mjs')) {
+          continue;
+        }
+        // Try to extract script name
+        const scriptMatch = cmd.match(/([^/\\]+)\.(js|ts|mjs|cjs)(?:\s|$)/i);
+        if (scriptMatch) {
+          const script = scriptMatch[1].toLowerCase();
+          if (!labels.includes(script) && script !== 'cli' && script !== 'index') {
+            labels.push(script);
+          }
+        }
+        continue;
+      }
+
+      // Python scripts
+      if (name === 'python.exe' || name === 'python' || name === 'python3') {
+        const scriptMatch = cmd.match(/([^/\\]+)\.py(?:\s|$)/i);
+        if (scriptMatch && !labels.includes(scriptMatch[1])) {
+          labels.push(scriptMatch[1]);
+        }
+        continue;
+      }
+
+      // Other processes - use name without extension
+      const cleanName = name.replace(/\.exe$/i, '');
+      if (!labels.includes(cleanName)) {
+        labels.push(cleanName);
+      }
+    }
+
+    return labels.slice(0, 3); // Limit to 3 labels
+  }, []);
 
   // Render a single panel group
   const renderPanelGroup = useCallback((groupId: string) => {
@@ -736,7 +812,7 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
         onClick={() => setActiveGroupId(groupId)}
       >
         {/* Tab bar */}
-        <div className="flex items-center h-8 bg-card border-b border-border px-1">
+        <div className="flex items-center h-12 bg-card border-b border-border px-1">
           <ScrollArea className="flex-1">
             <div
               className="flex items-center"
@@ -744,9 +820,9 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
             >
               {group.tabs.map((tab, index) => {
                 const tabTerminal = terminals.get(tab.terminalId);
-                const matchedSession = findMatchingSession(tabTerminal);
-                // Only show animal icon if matched with MCP session
-                const displayIconIndex = matchedSession?.iconIndex;
+                const mcpRunning = isMcpRunning(tabTerminal);
+                const claudeRunning = isClaudeRunning(tabTerminal);
+                const processLabels = getProcessLabels(tabTerminal);
                 return (
                 <Fragment key={tab.id}>
                   {/* Drop indicator before tab */}
@@ -771,7 +847,7 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
                           setActiveTab(groupId, tab.id);
                         }}
                         className={cn(
-                          'group flex items-center gap-1 px-2 py-1 text-xs rounded-t transition-colors cursor-pointer',
+                          'group flex items-center gap-2 px-3 py-2 text-sm rounded-t transition-colors cursor-pointer',
                           group.activeTabId === tab.id
                             ? 'bg-background text-foreground'
                             : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
@@ -780,24 +856,34 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
                       >
                         {tab.color && (
                           <div
-                            className="w-2 h-2 rounded-full shrink-0"
+                            className="w-3 h-3 rounded-full shrink-0"
                             style={{ backgroundColor: tab.color }}
                           />
                         )}
-                        {displayIconIndex ? (
-                          <AnimalIcon index={displayIconIndex} size={14} className="shrink-0" />
-                        ) : (
-                          <TerminalIcon className="w-3 h-3 shrink-0" />
+                        {claudeRunning && (
+                          <SparklesIcon className="w-4 h-4 shrink-0 text-primary" />
                         )}
-                        <span className="truncate max-w-[80px]">{tab.title}</span>
+                        {mcpRunning && tabTerminal?.iconIndex ? (
+                          <AnimalIcon index={tabTerminal.iconIndex} size={18} className="shrink-0" />
+                        ) : (
+                          <TerminalIcon className="w-4 h-4 shrink-0" />
+                        )}
+                        <div className="flex flex-col min-w-0">
+                          <span className="truncate max-w-[120px]">{tab.title}</span>
+                          {processLabels.length > 0 && (
+                            <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
+                              {processLabels.join(' · ')}
+                            </span>
+                          )}
+                        </div>
                         <span
                           onClick={(e) => {
                             e.stopPropagation();
                             closeTab(groupId, tab.id);
                           }}
-                          className="opacity-0 group-hover:opacity-100 hover:bg-muted rounded p-0.5 transition-opacity cursor-pointer"
+                          className="opacity-0 group-hover:opacity-100 hover:bg-muted rounded p-1 transition-opacity cursor-pointer"
                         >
-                          <XIcon className="w-3 h-3" />
+                          <XIcon className="w-4 h-4" />
                         </span>
                       </div>
                     </ContextMenuTrigger>
@@ -894,6 +980,8 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
                   sessionId={terminal.sessionId}
                   workingDir={workingDir}
                   isActive={isActiveGroup && isActiveTab}
+                  isVisible={isVisible}
+                  webglEnabled={webglEnabled}
                   onSessionCreated={(sessionId, shellPid) =>
                     handleSessionCreated(tab.terminalId, sessionId, shellPid)
                   }
@@ -928,7 +1016,10 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
     handleDragOver,
     handleDragLeave,
     handleDrop,
-    findMatchingSession,
+    isMcpRunning,
+    isClaudeRunning,
+    getProcessLabels,
+    webglEnabled,
   ]);
 
   // Render layout recursively
@@ -1010,6 +1101,26 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
           >
             <ExternalLinkIcon className="w-3.5 h-3.5" />
           </Button>
+
+          <div className="w-px h-4 bg-border mx-1" />
+
+          <Button
+            variant={webglEnabled ? 'default' : 'ghost'}
+            size="sm"
+            className={cn(
+              'h-6 gap-1.5 text-xs px-2',
+              webglEnabled && 'bg-primary/20 hover:bg-primary/30 text-primary'
+            )}
+            onClick={() => setWebglEnabled(!webglEnabled)}
+            title={webglEnabled ? 'WebGL enabled (GPU accelerated)' : 'WebGL disabled (Canvas renderer)'}
+          >
+            {webglEnabled ? (
+              <ZapIcon className="w-3 h-3" />
+            ) : (
+              <MonitorIcon className="w-3 h-3" />
+            )}
+            {webglEnabled ? 'WebGL' : 'Canvas'}
+          </Button>
         </div>
 
         <div className="flex-1" />
@@ -1076,6 +1187,3 @@ export function TerminalPanel({ workingDir, projectName, sessions = [], onClose,
     </div>
   );
 }
-
-// Export types for use in other components
-export type { LegacyTerminalTab as TerminalTab };

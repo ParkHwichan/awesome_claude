@@ -1,11 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Header } from './components/Layout';
 import { ProjectSidebar } from './components/ProjectSidebar';
 import { TicketDetail } from './components/TicketDetail';
 import { KanbanBoard } from './components/KanbanBoard';
-import { TerminalPanel, type LegacyTerminalTab as TerminalTab } from './components/Terminal';
+import { TerminalPanel } from './components/Terminal';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useProjectStore } from './store/project-store';
 import { useConversationStore } from './store/conversation-store';
@@ -24,9 +23,6 @@ import type {
   TicketClaimedEvent,
   TicketCompletedEvent,
   TicketFailedEvent,
-  SessionRegisteredEvent,
-  SessionUpdatedEvent,
-  SessionDisconnectedEvent,
   ConversationMessageEvent,
 } from '@awesome-claude/shared';
 
@@ -34,7 +30,6 @@ function App() {
   const {
     projects,
     tickets,
-    sessions,
     selectedProjectId,
     selectedTicketId,
     isLoading,
@@ -47,18 +42,15 @@ function App() {
     handleTicketCreated,
     handleTicketUpdated,
     handleTicketDeleted,
-    handleSessionRegistered,
-    handleSessionUpdated,
-    handleSessionDisconnected,
     deleteProject,
     createProject,
   } = useProjectStore();
 
-  // Load initial data on mount and periodically refresh sessions
+  // Load initial data on mount and periodically refresh
   useEffect(() => {
     loadInitialData();
 
-    // Periodic refresh to catch dead sessions cleaned up by backend
+    // Periodic refresh to catch changes
     const interval = setInterval(() => {
       loadInitialData();
     }, 5000); // Refresh every 5 seconds
@@ -75,7 +67,7 @@ function App() {
 
   const { addMessage, addDebugLog } = useConversationStore();
 
-  // Subscribe to project events
+  // Subscribe to events
   useEffect(() => {
     const unsubscribers = [
       subscribe<ProjectCreatedEvent>('project:created', (e) =>
@@ -104,15 +96,6 @@ function App() {
       ),
       subscribe<TicketFailedEvent>('ticket:failed', (e) =>
         handleTicketUpdated(e.payload.ticket)
-      ),
-      subscribe<SessionRegisteredEvent>('session:registered', (e) =>
-        handleSessionRegistered(e.payload)
-      ),
-      subscribe<SessionUpdatedEvent>('session:updated', (e) =>
-        handleSessionUpdated(e.payload)
-      ),
-      subscribe<SessionDisconnectedEvent>('session:disconnected', (e) =>
-        handleSessionDisconnected(e.payload.id)
       ),
       subscribe<ConversationMessageEvent>('conversation:message', (e) =>
         addMessage({
@@ -145,9 +128,6 @@ function App() {
     handleTicketCreated,
     handleTicketUpdated,
     handleTicketDeleted,
-    handleSessionRegistered,
-    handleSessionUpdated,
-    handleSessionDisconnected,
     addMessage,
     addDebugLog,
   ]);
@@ -167,66 +147,10 @@ function App() {
   const selectedTicket = tickets.find((t) => t.id === selectedTicketId);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [currentView, setCurrentView] = useState<'board' | 'terminal'>('board');
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
-
-  // Load terminal info from Rust backend (source of truth)
-  const loadTerminalInfo = useCallback(async () => {
-    try {
-      const terminals = await invoke<Array<{
-        sessionId: string;
-        workingDir: string;
-        shellPid: number;
-        isAlive: boolean;
-        childProcesses: Array<{ pid: number; name: string; cmd: string }>;
-        title: string;
-        color: string | null;
-      }>>('terminal_list');
-
-      // Convert to TerminalTab format, filter by selected project's working directory
-      const normalizedProjectDir = selectedProject?.workingDirectory?.toLowerCase().replace(/\\/g, '/');
-      const tabs: TerminalTab[] = terminals
-        .filter(t => t.isAlive && normalizedProjectDir && t.workingDir.toLowerCase().replace(/\\/g, '/') === normalizedProjectDir)
-        .map((t) => ({
-          sessionId: t.sessionId,
-          shellPid: t.shellPid,
-          childProcesses: t.childProcesses,
-          title: t.title,  // From backend (source of truth)
-          color: t.color ?? undefined,  // From backend
-        }));
-
-      setTerminalTabs(tabs);
-    } catch (err) {
-      console.error('Failed to load terminal info:', err);
-    }
-  }, [selectedProject?.workingDirectory]);
-
-  // Load terminal info periodically
-  useEffect(() => {
-    loadTerminalInfo();
-    const interval = setInterval(loadTerminalInfo, 2000);
-    return () => clearInterval(interval);
-  }, [loadTerminalInfo]);
-
-  const handleTerminalTabsChange = useCallback((tabs: TerminalTab[]) => {
-    // Backend is source of truth - just refresh from backend
-    // This callback is triggered when terminal panel updates, so we refresh to get latest state
-    loadTerminalInfo();
-  }, [loadTerminalInfo]);
 
   const handleDeleteProject = useCallback((id: string) => {
     deleteProject(id);
   }, [deleteProject]);
-
-  const handleDisconnectSession = useCallback(async (sessionId: string) => {
-    try {
-      await invoke('disconnect_session', { sessionId });
-      // The store will be updated via the next loadInitialData call
-      // or we can manually remove it immediately
-      handleSessionDisconnected(sessionId);
-    } catch (err) {
-      console.error('Failed to disconnect session:', err);
-    }
-  }, [handleSessionDisconnected]);
 
   const handleCreateProject = useCallback(async () => {
     const selected = await open({
@@ -255,8 +179,6 @@ function App() {
             <ProjectSidebar
               projects={projects}
               tickets={tickets}
-              sessions={sessions}
-              terminalTabs={terminalTabs}
               selectedProjectId={selectedProjectId}
               selectedTicketId={selectedTicketId}
               currentView={currentView}
@@ -265,7 +187,6 @@ function App() {
               onSelectView={setCurrentView}
               onDeleteProject={handleDeleteProject}
               onCreateProject={handleCreateProject}
-              onDisconnectSession={handleDisconnectSession}
             />
           </div>
         </div>
@@ -301,7 +222,6 @@ function App() {
           <div className="flex-1 min-h-0 overflow-hidden relative">
             {selectedProject ? (
               <>
-                {/* Using absolute positioning to preserve terminal state when switching views */}
                 <div className={cn(
                   'absolute inset-0',
                   currentView === 'board'
@@ -314,20 +234,15 @@ function App() {
                     onSelectTicket={setSelectedTicketId}
                   />
                 </div>
-                <div className={cn(
-                  'absolute inset-0',
-                  currentView === 'terminal'
-                    ? 'z-10 opacity-100 pointer-events-auto'
-                    : 'z-0 opacity-0 pointer-events-none'
-                )}>
-                  <TerminalPanel
-                    key={selectedProject.id}
-                    workingDir={selectedProject.workingDirectory}
-                    projectName={selectedProject.name}
-                    sessions={sessions.filter(s => s.projectId === selectedProject.id)}
-                    onTabsChange={handleTerminalTabsChange}
-                  />
-                </div>
+                {currentView === 'terminal' && (
+                  <div className="absolute inset-0 z-10">
+                    <TerminalPanel
+                      key={selectedProject.id}
+                      workingDir={selectedProject.workingDirectory}
+                      projectName={selectedProject.name}
+                    />
+                  </div>
+                )}
               </>
             ) : (
               <div className="flex items-center justify-center h-full p-10">
@@ -362,7 +277,6 @@ function App() {
             <TicketDetail
               ticket={selectedTicket}
               tickets={tickets}
-              sessions={sessions}
               onDelete={(ticketId) => {
                 handleTicketDeleted(ticketId);
                 setSelectedTicketId(null);

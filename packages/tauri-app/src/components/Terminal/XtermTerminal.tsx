@@ -3,7 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
+import './xterm-fixes.css';
 import { useTerminalBlocks } from '@/hooks/useTerminalBlocks';
 import { useTerminalHistory } from '@/hooks/useTerminalHistory';
 import { BlockOverlay } from './BlockOverlay';
@@ -20,6 +23,8 @@ interface XtermTerminalProps {
   sessionId: string;
   workingDir: string;
   isActive?: boolean;
+  isVisible?: boolean;
+  webglEnabled?: boolean;
   onSessionCreated?: (sessionId: string, shellPid: number) => void;
   onChildProcessesChange?: (processes: ChildProcessInfo[]) => void;
   onExit?: () => void;
@@ -40,10 +45,13 @@ export function XtermTerminal({
   sessionId,
   workingDir,
   isActive = true,
+  isVisible = true,
+  webglEnabled = true,
   onSessionCreated,
   onChildProcessesChange,
   onExit,
 }: XtermTerminalProps) {
+  const isInteractive = isActive && isVisible;
   const [isConnected, setIsConnected] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [terminal, setTerminal] = useState<Terminal | null>(null);
@@ -53,6 +61,9 @@ export function XtermTerminal({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const actualSessionIdRef = useRef<string | null>(null);
+  const onExitRef = useRef(onExit);
+  const onSessionCreatedRef = useRef(onSessionCreated);
+  const lastAttachRef = useRef<number>(0);
 
   // Block management - pass state so hook updates when terminal is created
   const {
@@ -64,6 +75,14 @@ export function XtermTerminal({
     clearBlocks,
     getBlockDuration,
   } = useTerminalBlocks(terminal);
+
+  useEffect(() => {
+    onExitRef.current = onExit;
+  }, [onExit]);
+
+  useEffect(() => {
+    onSessionCreatedRef.current = onSessionCreated;
+  }, [onSessionCreated]);
 
   // Command history management
   const {
@@ -116,20 +135,22 @@ export function XtermTerminal({
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Create terminal instance
+    // Create terminal instance with performance optimizations
     // Korean-friendly monospace fonts with fallbacks
     const terminal = new Terminal({
       fontFamily: '"D2Coding", "Nanum Gothic Coding", "Cascadia Code", "Sarasa Mono K", "Malgun Gothic", Consolas, monospace',
       fontSize: FONT_SIZE,
       lineHeight: LINE_HEIGHT,
-      cursorBlink: false,
-      cursorStyle: 'bar',
-      cursorInactiveStyle: 'none',
+      cursorBlink: true,
+      cursorStyle: 'block',
+      cursorInactiveStyle: 'block',
+      // Performance options
+      scrollback: 5000,  // Limit scrollback buffer (default is 1000)
       theme: {
         background: '#0d1117',
         foreground: '#c9d1d9',
-        cursor: 'transparent',  // Hide cursor - Claude CLI has its own input area
-        cursorAccent: 'transparent',
+        cursor: '#c9d1d9',  // Visible cursor matching foreground
+        cursorAccent: '#0d1117',  // Cursor text color matching background
         selectionBackground: '#264f78',
         selectionForeground: '#ffffff',
         black: '#484f58',
@@ -159,33 +180,74 @@ export function XtermTerminal({
     // Open terminal in container
     terminal.open(containerRef.current);
 
+    // Load Unicode11 addon for proper CJK character width handling
+    const unicode11Addon = new Unicode11Addon();
+    terminal.loadAddon(unicode11Addon);
+    terminal.unicode.activeVersion = '11';
+
+    // Load WebGL addon for GPU-accelerated rendering (if enabled)
+    let webglAddon: WebglAddon | null = null;
+    if (webglEnabled) {
+      try {
+        webglAddon = new WebglAddon();
+        webglAddon.onContextLoss(() => {
+          // WebGL context lost - dispose and fall back to canvas renderer
+          webglAddon?.dispose();
+        });
+        terminal.loadAddon(webglAddon);
+        console.log('[Terminal] WebGL renderer enabled');
+      } catch (e) {
+        console.warn('WebGL addon failed to load, using canvas renderer:', e);
+      }
+    } else {
+      console.log('[Terminal] Canvas renderer (WebGL disabled)');
+    }
+
     // Register OSC 133 handler for block detection
     registerOSCHandler(terminal);
 
-    // Handle Ctrl+V paste
+    // Focus management for click events
+    const container = containerRef.current;
+    const handleMouseDown = () => terminal.focus();
+    container.addEventListener('mousedown', handleMouseDown);
+
+    // Handle Ctrl+C and Ctrl+V
     terminal.attachCustomKeyEventHandler((event) => {
       // Only handle keydown events
       if (event.type !== 'keydown') {
         return true;
       }
+
       // Ctrl+V or Cmd+V for paste
       if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
         navigator.clipboard.readText().then((text) => {
           if (text && actualSessionIdRef.current) {
             invoke('terminal_write', { sessionId: actualSessionIdRef.current, data: text }).catch(console.error);
           }
-        }).catch(console.error);
+        }).catch((err) => {
+          console.error('Clipboard read failed:', err);
+        });
         return false; // Prevent default handling
       }
-      // Ctrl+C for copy (let browser handle it)
+
+      // Ctrl+C or Cmd+C
       if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
-        return true; // Allow default (copy selection)
+        const selection = terminal.getSelection();
+        if (selection) {
+          // There's selected text - copy it to clipboard
+          navigator.clipboard.writeText(selection).catch(console.error);
+          return false; // We handled it
+        } else {
+          // No selection - send SIGINT (Ctrl+C = \x03) to terminal
+          if (actualSessionIdRef.current) {
+            invoke('terminal_write', { sessionId: actualSessionIdRef.current, data: '\x03' }).catch(console.error);
+          }
+          return false; // We handled it
+        }
       }
+
       return true; // Allow other keys
     });
-
-    // NOTE: WebGL addon disabled - it prevents CSS cursor hiding
-    // CSS in xterm-cursor-hide.css hides the cursor for Claude CLI's TUI
 
     // Track scroll position for scroll-to-bottom button
     // Use xterm's built-in scroll event for reliability
@@ -198,8 +260,13 @@ export function XtermTerminal({
       setIsAtBottom(atBottom);
     });
 
-    // Initial fit
-    fitAddon.fit();
+    // Initial fit - wait for next frame to ensure layout is stable
+    requestAnimationFrame(() => {
+      const clientWidth = containerRef.current?.clientWidth;
+      if (clientWidth && clientWidth > 0) {
+        fitAddon.fit();
+      }
+    });
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -207,12 +274,15 @@ export function XtermTerminal({
 
     return () => {
       scrollDisposable.dispose();
+      container.removeEventListener('mousedown', handleMouseDown);
+      unicode11Addon.dispose();
+      webglAddon?.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
       setTerminal(null);
     };
-  }, [registerOSCHandler]);
+  }, [registerOSCHandler, webglEnabled]);
 
   // Initialize terminal session
   useEffect(() => {
@@ -230,9 +300,15 @@ export function XtermTerminal({
       const isPending = sessionId.startsWith('pending-');
       let actualSessionId: string;
 
-      // Get terminal dimensions
+      // Fit terminal first to get correct dimensions
+      if (fitAddon) {
+        fitAddon.fit();
+      }
+
+      // Get terminal dimensions after fit
       const cols = terminal.cols;
       const rows = terminal.rows;
+      console.log('[INIT SIZE]', sessionId.slice(-8), cols, 'x', rows);
 
       if (isPending) {
         try {
@@ -244,7 +320,7 @@ export function XtermTerminal({
           if (!mounted) return;
           actualSessionId = result.sessionId;
           actualSessionIdRef.current = actualSessionId;
-          onSessionCreated?.(result.sessionId, result.shellPid);
+          onSessionCreatedRef.current?.(result.sessionId, result.shellPid);
         } catch (err) {
           terminal.writeln(`\x1b[31mFailed to create terminal: ${err}\x1b[0m`);
           return;
@@ -295,7 +371,7 @@ export function XtermTerminal({
           if (mounted) {
             terminal.writeln('\x1b[33m[Session ended]\x1b[0m');
             setIsConnected(false);
-            onExit?.();
+            onExitRef.current?.();
           }
         }
       );
@@ -321,6 +397,7 @@ export function XtermTerminal({
 
       // Attach to session
       try {
+        console.log('[PTY] attach:init', actualSessionId.slice(-8), cols, 'x', rows);
         await invoke('terminal_attach', {
           sessionId: actualSessionId,
           cols,
@@ -328,8 +405,8 @@ export function XtermTerminal({
         });
         if (mounted) {
           setIsConnected(true);
+
           // Run initial heuristic detection after a short delay
-          // to allow the shell prompt to be received
           setTimeout(() => {
             if (mounted) {
               detectBlocksHeuristic();
@@ -362,50 +439,111 @@ export function XtermTerminal({
       unlistenChildren?.();
       const sid = actualSessionIdRef.current;
       if (sid) {
+        console.log('[PTY] detach:unmount', sid.slice(-8));
         invoke('terminal_detach', { sessionId: sid }).catch(() => {});
       }
     };
-  }, [sessionId, workingDir, onSessionCreated, onExit, decodeBase64, detectBlocksHeuristic]);
+  }, [sessionId, workingDir, decodeBase64, detectBlocksHeuristic]);
 
-  // Handle resize - debounced to prevent constant redraws
+  // Handle resize - debounce to prevent oscillation
   const prevSizeRef = useRef<{ cols: number; rows: number } | null>(null);
-  const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resizeTimeoutRef = useRef<number | null>(null);
+  const prevContainerSizeRef = useRef<{ width: number; height: number } | null>(null);
+  const refitAndResize = useCallback((reason: string) => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    const sid = actualSessionIdRef.current;
+    const container = containerRef.current;
+    if (!terminal || !fitAddon || !sid || !container) return;
+
+    const tryFit = (attemptsLeft: number) => {
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (width === 0 || height === 0) {
+        if (attemptsLeft > 0) {
+          setTimeout(() => tryFit(attemptsLeft - 1), 50);
+        }
+        return;
+      }
+
+      fitAddon.fit();
+      const cols = terminal.cols;
+      const rows = terminal.rows;
+      prevSizeRef.current = { cols, rows };
+      invoke('terminal_resize', {
+        sessionId: sid,
+        cols,
+        rows,
+      }).catch(console.error);
+      terminal.refresh(0, terminal.rows - 1);
+      console.log('[REFIT]', reason, cols, 'x', rows);
+    };
+
+    requestAnimationFrame(() => tryFit(3));
+  }, []);
 
   useEffect(() => {
     const terminal = terminalRef.current;
     const fitAddon = fitAddonRef.current;
-    if (!terminal || !fitAddon || !containerRef.current) return;
+    const container = containerRef.current;
+    if (!terminal || !fitAddon || !container) return;
 
-    const resizeObserver = new ResizeObserver(() => {
-      // Debounce resize events - wait 150ms after last resize
-      if (resizeTimeoutRef.current) {
+    // Debounced fit function to prevent resize oscillation
+    const scheduleFit = () => {
+      // Get container dimensions first
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+
+      // Skip if container has zero dimensions (hidden/not laid out)
+      if (containerWidth === 0 || containerHeight === 0) return;
+
+      // Skip if container size hasn't actually changed (prevents redundant resizes)
+      const prevContainerSize = prevContainerSizeRef.current;
+      if (prevContainerSize &&
+          prevContainerSize.width === containerWidth &&
+          prevContainerSize.height === containerHeight) {
+        return;
+      }
+      prevContainerSizeRef.current = { width: containerWidth, height: containerHeight };
+
+      // Clear any pending resize
+      if (resizeTimeoutRef.current !== null) {
         clearTimeout(resizeTimeoutRef.current);
       }
 
-      resizeTimeoutRef.current = setTimeout(() => {
+      // Debounce resize with 50ms delay
+      resizeTimeoutRef.current = window.setTimeout(() => {
+        resizeTimeoutRef.current = null;
+
         fitAddon.fit();
-        const sid = actualSessionIdRef.current;
+
         const newCols = terminal.cols;
         const newRows = terminal.rows;
         const prev = prevSizeRef.current;
 
-        // Only send resize if size actually changed
-        if (sid && (!prev || prev.cols !== newCols || prev.rows !== newRows)) {
+        // Only send resize to backend if cols/rows actually changed
+        if (!prev || prev.cols !== newCols || prev.rows !== newRows) {
+          const sid = actualSessionIdRef.current;
+          console.log('[RESIZE]', sid?.slice(-8) ?? 'no-sid', newCols, 'x', newRows,
+            `(container: ${containerWidth}x${containerHeight})`);
           prevSizeRef.current = { cols: newCols, rows: newRows };
-          invoke('terminal_resize', {
-            sessionId: sid,
-            cols: newCols,
-            rows: newRows,
-          }).catch(console.error);
+          if (sid) {
+            invoke('terminal_resize', {
+              sessionId: sid,
+              cols: newCols,
+              rows: newRows,
+            }).catch(console.error);
+          }
         }
-      }, 150);
-    });
+      }, 50);
+    };
 
-    resizeObserver.observe(containerRef.current);
+    const resizeObserver = new ResizeObserver(scheduleFit);
+    resizeObserver.observe(container);
 
     return () => {
       resizeObserver.disconnect();
-      if (resizeTimeoutRef.current) {
+      if (resizeTimeoutRef.current !== null) {
         clearTimeout(resizeTimeoutRef.current);
       }
     };
@@ -414,16 +552,84 @@ export function XtermTerminal({
   // Track previous isActive to only focus on false->true transition
   const prevIsActiveRef = useRef(isActive);
 
-  // Focus terminal when active changes from false to true
+  // Focus and refresh terminal when active changes from false to true
   useEffect(() => {
     const wasActive = prevIsActiveRef.current;
-    prevIsActiveRef.current = isActive;
+    prevIsActiveRef.current = isInteractive;
 
-    // Only focus if transitioning from inactive to active
-    if (isActive && !wasActive && terminalRef.current) {
-      terminalRef.current.focus();
+    // Only act if transitioning from inactive to active
+    if (isInteractive && !wasActive) {
+      const terminal = terminalRef.current;
+
+      if (terminal) {
+        // Refit on tab activation since visibility changes don't trigger ResizeObserver.
+        refitAndResize('tab-active');
+        terminal.focus();
+      } else if (terminal) {
+        terminal.focus();
+      }
     }
-  }, [isActive]);
+  }, [isInteractive, refitAndResize]);
+
+  // Re-attach on tab activation to force backend replay and cursor realignment.
+  useEffect(() => {
+    if (!isInteractive) return;
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    const sid = actualSessionIdRef.current;
+    if (!terminal || !fitAddon || !sid) return;
+
+    const now = Date.now();
+    if (now - lastAttachRef.current < 150) {
+      return;
+    }
+    lastAttachRef.current = now;
+
+    fitAddon.fit();
+    const cols = terminal.cols;
+    const rows = terminal.rows;
+    prevSizeRef.current = { cols, rows };
+    console.log('[PTY] attach:tab-active', sid.slice(-8), cols, 'x', rows);
+    invoke('terminal_attach', { sessionId: sid, cols, rows }).catch(console.error);
+  }, [isInteractive]);
+
+  // Refit when window/tab regains focus or visibility.
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (!document.hidden && isInteractive) {
+        refitAndResize('window-visible');
+      }
+    };
+    const handleFocus = () => {
+      if (isInteractive) {
+        refitAndResize('window-focus');
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [isInteractive, refitAndResize]);
+
+  // Enable input only when the terminal is visible and active.
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.disableStdin = !isInteractive;
+  }, [isInteractive]);
+
+  // Blur hidden terminal input so it can't keep focus while not visible.
+  useEffect(() => {
+    if (isVisible) {
+      refitAndResize('panel-visible');
+      return;
+    }
+    const container = containerRef.current;
+    const input = container?.querySelector('textarea') as HTMLTextAreaElement | null;
+    input?.blur();
+  }, [isVisible, refitAndResize]);
 
   // Get actual cell dimensions from xterm.js internal API
   const getTerminalMetrics = useCallback(() => {
@@ -510,35 +716,39 @@ export function XtermTerminal({
     .filter((label, index, self) => self.indexOf(label) === index); // unique
 
   return (
-    <div className="w-full h-full flex flex-col" style={{ backgroundColor: '#0d1117' }}>
-      <div className="flex-1 min-h-0 relative">
-        <div
-          ref={containerRef}
-          className="absolute inset-0"
-        />
-        {/* Scroll to bottom button */}
-        {!isAtBottom && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={scrollToBottom}
-            className="absolute bottom-2 right-4 z-10 h-8 gap-1.5 shadow-lg bg-card/90 hover:bg-card border border-border"
-            title="맨 아래로"
-          >
-            <ArrowDownIcon className="w-4 h-4" />
-            <span className="text-xs">맨 아래로</span>
-          </Button>
-        )}
-      </div>
-      <TerminalInput
-        onSubmit={handleCommandSubmit}
-        onRawKey={handleRawKey}
-        history={history}
-        searchHistory={searchHistory}
-        addToHistory={addToHistory}
-        workingDir={workingDir}
-        disabled={!isConnected}
+    <div className="w-full h-full relative overflow-hidden" style={{ backgroundColor: '#0d1117' }}>
+      {/* Terminal container - leaves space for input at bottom */}
+      {/* Use calc() instead of bottom for more stable layout */}
+      <div
+        ref={containerRef}
+        className="absolute top-0 left-0 right-0 overflow-hidden"
+        style={{ height: 'calc(100% - 58px)' }}
       />
+      {/* Scroll to bottom button */}
+      {!isAtBottom && (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={scrollToBottom}
+          className="absolute bottom-16 right-4 z-10 h-8 gap-1.5 shadow-lg bg-card/90 hover:bg-card border border-border"
+          title="맨 아래로"
+        >
+          <ArrowDownIcon className="w-4 h-4" />
+          <span className="text-xs">맨 아래로</span>
+        </Button>
+      )}
+      {/* Input area - fixed at bottom */}
+      <div className="absolute bottom-0 left-0 right-0 z-20">
+        <TerminalInput
+          onSubmit={handleCommandSubmit}
+          onRawKey={handleRawKey}
+          history={history}
+          searchHistory={searchHistory}
+          addToHistory={addToHistory}
+          workingDir={workingDir}
+          disabled={!isConnected || !isInteractive}
+        />
+      </div>
     </div>
   );
 }

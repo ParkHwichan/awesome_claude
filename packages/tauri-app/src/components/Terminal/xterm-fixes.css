@@ -1,0 +1,26 @@
+/* Stability fixes for Tauri WebView rendering */
+.xterm {
+  /* Prevent transform/filter interference with cursor/text rendering */
+  transform: none !important;
+  filter: none !important;
+  /* Ensure consistent font rendering */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.xterm-screen {
+  /* Prevent any overlay from affecting rendering */
+  position: relative;
+  z-index: 1;
+}
+
+/* Cursor layer - let xterm handle cursor rendering */
+.xterm-cursor-layer {
+  z-index: 10;
+}
+
+/* Prevent viewport from fighting with TUI cursor movements */
+.xterm-viewport {
+  /* Let the PTY control scrolling, don't fight it */
+  overflow-y: auto !important;
+}
