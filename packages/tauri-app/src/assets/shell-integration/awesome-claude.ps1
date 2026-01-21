@@ -5,13 +5,12 @@
 $script:OSC = [char]0x1b + "]"
 $script:ST = [char]0x1b + "\"  # String Terminator
 
-function Send-OSC133 {
+function Get-OSC133 {
     param([string]$Code, [string]$Param = "")
     if ($Param) {
-        Write-Host -NoNewline "$script:OSC`133;$Code;$Param$script:ST"
-    } else {
-        Write-Host -NoNewline "$script:OSC`133;$Code$script:ST"
+        return "$script:OSC`133;$Code;$Param$script:ST"
     }
+    return "$script:OSC`133;$Code$script:ST"
 }
 
 # Custom prompt function
@@ -19,18 +18,9 @@ function global:prompt {
     $lastExitCode = $LASTEXITCODE
     $cwd = (Get-Location).Path
 
-    # OSC 133;A - Prompt start
-    Send-OSC133 -Code "A"
-
-    # Your actual prompt (customize as needed)
+    # Build prompt string so PSReadLine can track visible length correctly.
     $promptText = "PS $cwd> "
-    Write-Host -NoNewline $promptText
-
-    # OSC 133;B - Command input start
-    Send-OSC133 -Code "B"
-
-    # Return empty string (we already wrote the prompt)
-    return " "
+    return "$(Get-OSC133 -Code "A")$promptText$(Get-OSC133 -Code "B")"
 }
 
 # Hook for command execution
@@ -40,7 +30,7 @@ $script:PreCommandTime = $null
 function PreCommandHandler {
     $script:PreCommandTime = Get-Date
     # OSC 133;C - Command execution start
-    Send-OSC133 -Code "C"
+    Write-Host -NoNewline "$(Get-OSC133 -Code "C")"
 }
 
 # PostCommandHandler - called after command execution
@@ -49,7 +39,7 @@ function PostCommandHandler {
     if ($null -eq $exitCode) { $exitCode = 0 }
 
     # OSC 133;D - Command finished with exit code
-    Send-OSC133 -Code "D" -Param $exitCode.ToString()
+    Write-Host -NoNewline "$(Get-OSC133 -Code "D" -Param $exitCode.ToString())"
 }
 
 # Register the handlers using PSReadLine if available
@@ -66,6 +56,11 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
         PostCommandHandler
         return $true
     }
+}
+
+# Provide TERM for tools that rely on terminal capabilities.
+if (-not $env:TERM) {
+    $env:TERM = "xterm-256color"
 }
 
 Write-Host "Awesome Claude shell integration loaded" -ForegroundColor Green
