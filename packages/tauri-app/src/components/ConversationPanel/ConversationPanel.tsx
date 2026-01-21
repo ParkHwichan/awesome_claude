@@ -13,15 +13,10 @@ import {
   BugIcon,
   TrashIcon,
 } from 'lucide-react';
-import type { Session } from '@awesome-claude/shared';
-
-interface ConversationPanelProps {
-  sessions: Session[];
-}
 
 type TabType = 'messages' | 'debug';
 
-export function ConversationPanel({ sessions }: ConversationPanelProps) {
+export function ConversationPanel() {
   const {
     messages,
     debugLogs,
@@ -149,7 +144,6 @@ export function ConversationPanel({ sessions }: ConversationPanelProps) {
             All
           </button>
           {allSessionIds.map((sessionId) => {
-            const session = sessions.find((s) => s.id === sessionId);
             const logCount = activeTab === 'debug'
               ? (debugLogs.get(sessionId)?.length || 0)
               : (messages.get(sessionId)?.length || 0);
@@ -164,17 +158,7 @@ export function ConversationPanel({ sessions }: ConversationPanelProps) {
                     : 'bg-muted hover:bg-muted/80 text-muted-foreground'
                 )}
               >
-                {session && (
-                  <span
-                    className={cn(
-                      'w-1.5 h-1.5 rounded-full',
-                      session.status === 'working' ? 'bg-info' :
-                      session.status === 'active' ? 'bg-success' :
-                      session.status === 'disconnected' ? 'bg-muted-foreground' : 'bg-warning'
-                    )}
-                  />
-                )}
-                {session?.name || sessionId.slice(0, 8)}
+                {sessionId.slice(0, 8)}
                 {logCount > 0 && (
                   <Badge variant="outline" className="text-[9px] h-3 px-1">
                     {logCount}

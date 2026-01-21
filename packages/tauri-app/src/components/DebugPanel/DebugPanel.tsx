@@ -4,13 +4,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { BugIcon, TrashIcon } from 'lucide-react';
-import type { Session } from '@awesome-claude/shared';
 
-interface DebugPanelProps {
-  sessions: Session[];
-}
-
-export function DebugPanel({ sessions }: DebugPanelProps) {
+export function DebugPanel() {
   const { debugLogs, selectedSessionId, setSelectedSessionId, clearDebugLogs } = useConversationStore();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -69,7 +64,6 @@ export function DebugPanel({ sessions }: DebugPanelProps) {
             All
           </button>
           {sessionsWithLogs.map((sessionId) => {
-            const session = sessions.find((s) => s.id === sessionId);
             const count = debugLogs.get(sessionId)?.length || 0;
             return (
               <button
@@ -82,7 +76,7 @@ export function DebugPanel({ sessions }: DebugPanelProps) {
                     : 'bg-muted hover:bg-muted/80 text-muted-foreground'
                 )}
               >
-                {session?.name || sessionId.slice(0, 8)}
+                {sessionId.slice(0, 8)}
                 <Badge variant="outline" className="text-[9px] h-3 px-1">
                   {count}
                 </Badge>

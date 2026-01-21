@@ -7,7 +7,6 @@ import type {
   TicketProgress,
   TicketStatus,
   TicketPriority,
-  Session,
 } from '@awesome-claude/shared';
 
 interface ProjectState {
@@ -16,7 +15,6 @@ interface ProjectState {
   currentProject: Project | null;
   tickets: Ticket[];
   ticketProgress: TicketProgress | null;
-  sessions: Session[];
 
   // UI State
   selectedProjectId: string | null;
@@ -29,7 +27,6 @@ interface ProjectState {
   setCurrentProject: (project: Project | null) => void;
   setTickets: (tickets: Ticket[]) => void;
   setTicketProgress: (progress: TicketProgress | null) => void;
-  setSessions: (sessions: Session[]) => void;
   setSelectedProjectId: (id: string | null) => void;
   setSelectedTicketId: (id: string | null) => void;
   setLoading: (loading: boolean) => void;
@@ -45,9 +42,6 @@ interface ProjectState {
   handleTicketCreated: (ticket: Ticket) => void;
   handleTicketUpdated: (ticket: Ticket) => void;
   handleTicketDeleted: (id: string) => void;
-  handleSessionRegistered: (session: Session) => void;
-  handleSessionUpdated: (session: Session) => void;
-  handleSessionDisconnected: (id: string) => void;
 
   // Project actions
   deleteProject: (id: string) => Promise<void>;
@@ -64,7 +58,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   currentProject: null,
   tickets: [],
   ticketProgress: null,
-  sessions: [],
   selectedProjectId: null,
   selectedTicketId: null,
   isLoading: false,
@@ -75,7 +68,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setCurrentProject: (project) => set({ currentProject: project }),
   setTickets: (tickets) => set({ tickets }),
   setTicketProgress: (progress) => set({ ticketProgress: progress }),
-  setSessions: (sessions) => set({ sessions }),
   setSelectedProjectId: (id) => {
     if (id) {
       localStorage.setItem('selectedProjectId', id);
@@ -92,12 +84,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   loadInitialData: async () => {
     set({ isLoading: true, error: null });
     try {
-      // Clean up dead sessions first
-      await invoke('cleanup_dead_sessions').catch(() => {});
-
       const data = await invoke<{
         projects: ProjectSummary[];
-        sessions: Session[];
         tickets: Ticket[];
       }>('get_initial_data');
 
@@ -107,7 +95,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
       set({
         projects: data.projects,
-        sessions: data.sessions,
         tickets: data.tickets,
         selectedProjectId: projectExists ? savedProjectId : null,
         isLoading: false,
@@ -158,7 +145,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       currentProject: currentProject?.id === id ? null : currentProject,
       selectedProjectId: selectedProjectId === id ? null : selectedProjectId,
       tickets: selectedProjectId === id ? [] : get().tickets,
-      sessions: selectedProjectId === id ? [] : get().sessions,
     });
   },
 
@@ -192,49 +178,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   handleTicketDeleted: (id) => {
     const { tickets } = get();
     set({ tickets: tickets.filter((t) => t.id !== id) });
-  },
-
-  handleSessionRegistered: (session) => {
-    const { sessions, projects } = get();
-    // Skip if already exists
-    if (sessions.some((s) => s.id === session.id)) {
-      return;
-    }
-    // Always add session to list (shown in conversation panel regardless of selected project)
-    set({ sessions: [...sessions, session] });
-    // Update project summary
-    const updatedProjects = projects.map((p) =>
-      p.id === session.projectId
-        ? { ...p, activeSessionCount: p.activeSessionCount + 1 }
-        : p
-    );
-    set({ projects: updatedProjects });
-  },
-
-  handleSessionUpdated: (session) => {
-    const { sessions } = get();
-    // Always update session (shown in conversation panel regardless of selected project)
-    set({
-      sessions: sessions.map((s) => (s.id === session.id ? session : s)),
-    });
-  },
-
-  handleSessionDisconnected: (id) => {
-    const { sessions, projects } = get();
-    const session = sessions.find((s) => s.id === id);
-    if (session) {
-      // Remove disconnected session from the list
-      set({
-        sessions: sessions.filter((s) => s.id !== id),
-      });
-      // Update project summary
-      const updatedProjects = projects.map((p) =>
-        p.id === session.projectId
-          ? { ...p, activeSessionCount: Math.max(0, p.activeSessionCount - 1) }
-          : p
-      );
-      set({ projects: updatedProjects });
-    }
   },
 
   // Project actions

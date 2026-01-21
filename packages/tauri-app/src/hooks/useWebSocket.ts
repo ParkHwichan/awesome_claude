@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
-import type { Session, AppEvent, EventType, EventHandler } from '@awesome-claude/shared';
+import type { AppEvent, EventType, EventHandler } from '@awesome-claude/shared';
 
 interface ConnectionState {
   isConnected: boolean;
@@ -10,7 +10,6 @@ interface ConnectionState {
 
 export function useWebSocket() {
   const handlersRef = useRef<Map<EventType, Set<EventHandler<any>>>>(new Map());
-  const unlistenRef = useRef<UnlistenFn | null>(null);
 
   const [state, setState] = useState<ConnectionState>({
     isConnected: false,
@@ -35,13 +34,24 @@ export function useWebSocket() {
     []
   );
 
-  // Check if any MCP clients are connected
+  // Check if any MCP clients are connected by checking terminals
   const checkConnection = useCallback(async () => {
     try {
-      const sessions = await invoke<Session[]>('get_sessions');
-      const activeSessions = sessions.filter((s) => s.status !== 'disconnected');
+      // Check if any terminals have MCP server running
+      const terminals = await invoke<Array<{
+        sessionId: string;
+        isAlive: boolean;
+        childProcesses: Array<{ pid: number; name: string; cmd: string }>;
+      }>>('terminal_list');
+
+      const hasMcpServer = terminals.some(t => t.isAlive && t.childProcesses?.some(p =>
+        p.name.toLowerCase().includes('awesome-claude') ||
+        p.cmd.toLowerCase().includes('awesome-claude') ||
+        p.cmd.toLowerCase().includes('mcp-server')
+      ));
+
       setState({
-        isConnected: activeSessions.length > 0,
+        isConnected: hasMcpServer,
         error: null,
       });
     } catch (err) {
@@ -52,11 +62,14 @@ export function useWebSocket() {
     }
   }, []);
 
-  // Setup Tauri event listener
+  // Setup Tauri event listeners
   useEffect(() => {
-    // Listen to mcp-event from Tauri backend
-    const setupListener = async () => {
-      unlistenRef.current = await listen<{ type: string; [key: string]: unknown }>('mcp-event', (event) => {
+    let unlistenMcpEvent: UnlistenFn | null = null;
+    let unlistenTerminalList: UnlistenFn | null = null;
+
+    const setupListeners = async () => {
+      // Listen to mcp-event from Tauri backend
+      unlistenMcpEvent = await listen<{ type: string; [key: string]: unknown }>('mcp-event', (event) => {
         const data = event.payload;
         const eventType = data.type;
 
@@ -71,21 +84,21 @@ export function useWebSocket() {
           handlers.forEach((handler) => handler(data as unknown as AppEvent));
         }
       });
+
+      // Listen to terminal-list-changed to re-check MCP connection status
+      unlistenTerminalList = await listen('terminal-list-changed', () => {
+        checkConnection();
+      });
     };
 
-    setupListener();
+    setupListeners();
 
     // Initial connection check
     checkConnection();
 
-    // Periodic connection check
-    const interval = setInterval(checkConnection, 5000);
-
     return () => {
-      if (unlistenRef.current) {
-        unlistenRef.current();
-      }
-      clearInterval(interval);
+      unlistenMcpEvent?.();
+      unlistenTerminalList?.();
     };
   }, [checkConnection]);
 

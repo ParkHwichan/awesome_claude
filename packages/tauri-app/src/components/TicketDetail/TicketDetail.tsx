@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
-import type { Ticket, Session, ChecklistItem, TicketComment, TicketTag } from '@awesome-claude/shared';
+import type { Ticket, ChecklistItem, TicketComment, TicketTag } from '@awesome-claude/shared';
+import { useTerminalStore } from '@/store/terminal-store';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Separator } from '@/components/ui/separator';
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -22,12 +22,12 @@ import {
   LinkIcon,
   SquareIcon,
   CheckSquareIcon,
+  TerminalIcon,
 } from 'lucide-react';
 
 interface TicketDetailProps {
   ticket: Ticket | null;
   tickets: Ticket[];
-  sessions: Session[];
   onDelete?: (ticketId: string) => void;
   onSelectTicket?: (ticketId: string) => void;
 }
@@ -44,7 +44,8 @@ function findTicketById(tickets: Ticket[], id: string): Ticket | undefined {
   return undefined;
 }
 
-export function TicketDetail({ ticket, tickets, sessions, onDelete, onSelectTicket }: TicketDetailProps) {
+export function TicketDetail({ ticket, tickets, onDelete, onSelectTicket }: TicketDetailProps) {
+  const terminalTabs = useTerminalStore((state) => state.tabs);
   const [isDeleting, setIsDeleting] = useState(false);
 
   if (!ticket) {
@@ -69,8 +70,9 @@ export function TicketDetail({ ticket, tickets, sessions, onDelete, onSelectTick
     }
   };
 
-  const claimedSession = ticket.claimedBy
-    ? sessions.find((s) => s.id === ticket.claimedBy)
+  // Find terminal by claimedBy ID (terminal sessionId)
+  const claimedTerminal = ticket.claimedBy
+    ? terminalTabs.find((t) => t.sessionId === ticket.claimedBy)
     : null;
 
   const getStatusColor = (status: string) => {
@@ -106,8 +108,6 @@ export function TicketDetail({ ticket, tickets, sessions, onDelete, onSelectTick
 
   const completedChecklist = ticket.checklist?.filter((c) => c.completed).length || 0;
   const totalChecklist = ticket.checklist?.length || 0;
-
-  const createdBySession = sessions.find((s) => s.id === ticket.createdBy);
 
   return (
     <div className="flex flex-col h-[85vh] max-h-[85vh]">
@@ -299,33 +299,50 @@ export function TicketDetail({ ticket, tickets, sessions, onDelete, onSelectTick
             </div>
           )}
 
-          {/* Assigned Session */}
-          {claimedSession && (
+          {/* Assigned Terminal */}
+          {claimedTerminal && (
             <div>
               <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2">
-                <UserIcon className="w-3.5 h-3.5" />
+                <TerminalIcon className="w-3.5 h-3.5" />
                 Assigned To
               </div>
               <div className="flex items-center gap-3 bg-muted/30 rounded-lg p-3">
-                <span
-                  className={cn(
-                    'w-2.5 h-2.5 rounded-full shrink-0',
-                    claimedSession.status === 'active'
-                      ? 'bg-success'
-                      : claimedSession.status === 'idle'
-                        ? 'bg-warning'
-                        : 'bg-muted-foreground'
-                  )}
-                />
+                {claimedTerminal.color ? (
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: claimedTerminal.color }}
+                  />
+                ) : (
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-success" />
+                )}
                 <div>
                   <p className="text-sm font-medium text-foreground">
-                    {claimedSession.name || claimedSession.id.slice(0, 8)}
+                    {claimedTerminal.title}
                   </p>
-                  {claimedSession.model && (
-                    <p className="text-xs text-muted-foreground">
-                      {claimedSession.model}
-                    </p>
-                  )}
+                  <p className="text-xs text-muted-foreground font-mono">
+                    {claimedTerminal.sessionId.slice(0, 12)}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Show claimedBy even if terminal not found */}
+          {ticket.claimedBy && !claimedTerminal && (
+            <div>
+              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-2">
+                <UserIcon className="w-3.5 h-3.5" />
+                Claimed By
+              </div>
+              <div className="flex items-center gap-3 bg-muted/30 rounded-lg p-3">
+                <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {ticket.claimedBy.slice(0, 16)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    (Terminal disconnected)
+                  </p>
                 </div>
               </div>
             </div>
@@ -340,7 +357,7 @@ export function TicketDetail({ ticket, tickets, sessions, onDelete, onSelectTick
               </div>
               <div className="space-y-2">
                 {ticket.comments.map((comment) => (
-                  <CommentItem key={comment.id} comment={comment} sessions={sessions} />
+                  <CommentItem key={comment.id} comment={comment} />
                 ))}
               </div>
             </div>
@@ -401,7 +418,7 @@ export function TicketDetail({ ticket, tickets, sessions, onDelete, onSelectTick
             <div className="flex items-center gap-3 bg-muted/30 rounded-lg p-3">
               <div>
                 <p className="text-sm font-medium text-foreground">
-                  {createdBySession?.name || ticket.createdBy.slice(0, 8)}
+                  {ticket.createdBy.slice(0, 16)}
                 </p>
                 <p className="text-xs text-muted-foreground font-mono">
                   {ticket.createdBy}
@@ -548,9 +565,8 @@ function ChecklistItemRow({ item }: { item: ChecklistItem }) {
   );
 }
 
-function CommentItem({ comment, sessions }: { comment: TicketComment; sessions: Session[] }) {
-  const author = sessions.find((s) => s.id === comment.authorId);
-  const authorName = comment.authorName || author?.name || comment.authorId.slice(0, 8);
+function CommentItem({ comment }: { comment: TicketComment }) {
+  const authorName = comment.authorName || comment.authorId.slice(0, 8);
 
   const getCommentStyle = () => {
     switch (comment.type) {

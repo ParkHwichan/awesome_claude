@@ -10,13 +10,8 @@ import {
   WrenchIcon,
   BrainIcon,
 } from 'lucide-react';
-import type { Session } from '@awesome-claude/shared';
 
-interface MessagesPanelProps {
-  sessions: Session[];
-}
-
-export function MessagesPanel({ sessions }: MessagesPanelProps) {
+export function MessagesPanel() {
   const { messages, selectedSessionId, setSelectedSessionId } = useConversationStore();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -66,7 +61,6 @@ export function MessagesPanel({ sessions }: MessagesPanelProps) {
             All
           </button>
           {sessionsWithMessages.map((sessionId) => {
-            const session = sessions.find((s) => s.id === sessionId);
             const count = messages.get(sessionId)?.length || 0;
             return (
               <button
@@ -79,7 +73,7 @@ export function MessagesPanel({ sessions }: MessagesPanelProps) {
                     : 'bg-muted hover:bg-muted/80 text-muted-foreground'
                 )}
               >
-                {session?.name || sessionId.slice(0, 8)}
+                {sessionId.slice(0, 8)}
                 <Badge variant="outline" className="text-[9px] h-3 px-1">
                   {count}
                 </Badge>
