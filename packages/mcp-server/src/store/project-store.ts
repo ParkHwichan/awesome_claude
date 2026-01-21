@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { eq, sql } from 'drizzle-orm';
-import { getDb, projects, tickets, sessions } from '../db/index.js';
+import { getDb, projects, tickets } from '../db/index.js';
 import type {
   Project,
   ProjectSummary,
@@ -64,11 +64,12 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   const db = getDb();
 
   // Get all projects with aggregated counts using raw SQL for subqueries
+  // Note: Sessions are now managed by Tauri backend, so activeSessionCount is always 0
   const rows = await db.all(sql`
     SELECT
       p.*,
       (SELECT COUNT(*) FROM tickets WHERE project_id = p.id) as ticket_count,
-      (SELECT COUNT(*) FROM sessions WHERE project_id = p.id AND status != 'disconnected') as active_session_count,
+      0 as active_session_count,
       (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status = 'pending') as pending_tickets,
       (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status IN ('claimed', 'in_progress')) as in_progress_tickets,
       (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status = 'completed') as completed_tickets
@@ -114,9 +115,8 @@ export async function deleteProject(id: string): Promise<boolean> {
 
   const db = getDb();
 
-  // Cascade delete (FK constraints should handle this, but be explicit)
+  // Cascade delete tickets (FK constraints should handle this, but be explicit)
   await db.delete(tickets).where(eq(tickets.projectId, id)).run();
-  await db.delete(sessions).where(eq(sessions.projectId, id)).run();
   await db.delete(projects).where(eq(projects.id, id)).run();
 
   return true;

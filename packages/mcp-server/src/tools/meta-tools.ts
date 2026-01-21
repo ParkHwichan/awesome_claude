@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { getCurrentSession, getCurrentProject } from '../state.js';
+import { getCurrentProject } from '../state.js';
 import { broadcaster } from '../websocket/broadcaster.js';
 
 // Tool registry for dynamic discovery
+// Note: Session tools are removed - session management is now handled by Tauri backend
 const TOOL_REGISTRY = [
   // Project tools
   { name: 'project_create', category: 'project', desc: 'Create new project' },
@@ -12,12 +13,6 @@ const TOOL_REGISTRY = [
   { name: 'project_list', category: 'project', desc: 'List all projects' },
   { name: 'project_update', category: 'project', desc: 'Update project' },
   { name: 'project_delete', category: 'project', desc: 'Delete project' },
-
-  // Session tools
-  { name: 'session_status', category: 'session', desc: 'Get session info' },
-  { name: 'session_heartbeat', category: 'session', desc: 'Keep alive' },
-  { name: 'session_list', category: 'session', desc: 'List sessions' },
-  { name: 'session_update', category: 'session', desc: 'Update session' },
 
   // Ticket tools - Core
   { name: 'ticket_create', category: 'ticket', desc: 'Create ticket, returns ID' },
@@ -50,10 +45,10 @@ export function registerMetaTools(server: McpServer): void {
   // Find tools - dynamic tool discovery
   server.tool(
     'find_tools',
-    'Search tools by keyword or category. Categories: project, session, ticket, admin, meta',
+    'Search tools by keyword or category. Categories: project, ticket, admin, meta',
     {
       query: z.string().optional().describe('Search keyword'),
-      category: z.enum(['project', 'session', 'ticket', 'admin', 'meta']).optional(),
+      category: z.enum(['project', 'ticket', 'admin', 'meta']).optional(),
     },
     async ({ query, category }) => {
       let results = TOOL_REGISTRY;
@@ -81,13 +76,11 @@ export function registerMetaTools(server: McpServer): void {
     'Check MCP server health',
     {},
     async () => {
-      const session = getCurrentSession();
       const project = getCurrentProject();
       const wsConnected = broadcaster.isConnected();
 
       const status = [
         `MCP: OK`,
-        `Session: ${session ? 'OK' : 'NONE'}`,
         `Project: ${project ? 'OK' : 'NONE'}`,
         `WebSocket: ${wsConnected ? 'OK' : 'DISCONNECTED'}`,
       ];

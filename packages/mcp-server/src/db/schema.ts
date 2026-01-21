@@ -11,25 +11,8 @@ export const projects = sqliteTable('projects', {
   metadata: text('metadata'), // JSON string
 });
 
-// Sessions table
-export const sessions = sqliteTable('sessions', {
-  id: text('id').primaryKey(),
-  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
-  ppid: integer('ppid').notNull().default(0),
-  name: text('name'),
-  model: text('model'),
-  status: text('status').notNull().default('active'),
-  connectedAt: text('connected_at').notNull(),
-  lastActiveAt: text('last_active_at').notNull(),
-  disconnectedAt: text('disconnected_at'),
-  currentTicketId: text('current_ticket_id'),
-  ticketsCompleted: integer('tickets_completed').notNull().default(0),
-  ticketsFailed: integer('tickets_failed').notNull().default(0),
-  iconIndex: integer('icon_index'), // Animal icon index for visual identification
-  metadata: text('metadata'), // JSON string
-});
-
 // Tickets table
+// Note: claimedBy stores terminal sessionId (from Tauri backend), not MCP session ID
 export const tickets = sqliteTable('tickets', {
   id: text('id').primaryKey(),
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -45,7 +28,7 @@ export const tickets = sqliteTable('tickets', {
   comments: text('comments'), // JSON array of comments
   tags: text('tags'), // JSON array of tags
   category: text('category'), // ticket category
-  claimedBy: text('claimed_by').references(() => sessions.id, { onDelete: 'set null' }),
+  claimedBy: text('claimed_by'), // Terminal sessionId (simple text, no FK)
   claimedAt: text('claimed_at'),
   createdBy: text('created_by').notNull(),
   createdAt: text('created_at').notNull(),
@@ -104,9 +87,6 @@ export const todos = sqliteTable('todos', {
 // Type exports for use in application
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
-
-export type Session = typeof sessions.$inferSelect;
-export type NewSession = typeof sessions.$inferInsert;
 
 export type Ticket = typeof tickets.$inferSelect;
 export type NewTicket = typeof tickets.$inferInsert;

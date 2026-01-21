@@ -50,7 +50,7 @@ export function closeDatabase(): void {
   }
 }
 
-const CURRENT_VERSION = 8;
+const CURRENT_VERSION = 9;
 
 function runMigrations(libsqlClient: Client, dbPath: string): void {
   // Use a version file since libsql client is async-only
@@ -241,6 +241,23 @@ function runMigrations(libsqlClient: Client, dbPath: string): void {
       // Column may already exist
     }
     version = 8;
+  }
+
+  // Migration to remove sessions dependency - tickets.claimed_by is now just a text field
+  // Note: SQLite doesn't support ALTER TABLE to remove FK, but we just stop enforcing it
+  // The sessions table is kept for backwards compatibility but no longer used
+  if (version < 9) {
+    console.error('Running migration to version 9: Removing session dependencies');
+    // Nothing to do at SQL level - we just stop using sessions in the app
+    // Clear any existing claimed_by values that reference dead sessions
+    try {
+      libsqlClient.executeMultiple(`
+        UPDATE tickets SET claimed_by = NULL WHERE status = 'claimed' OR status = 'in_progress';
+      `);
+    } catch {
+      // Ignore errors
+    }
+    version = 9;
   }
 
   writeFileSync(versionFile, String(CURRENT_VERSION));

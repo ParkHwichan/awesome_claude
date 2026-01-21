@@ -1,6 +1,5 @@
 import WebSocket from 'ws';
 import type { AppEvent } from '@awesome-claude/shared';
-import { getCurrentSessionId } from '../state.js';
 
 const TAURI_WS_URL = 'ws://127.0.0.1:61987';
 const RECONNECT_INTERVAL = 3000;
@@ -26,16 +25,6 @@ class WebSocketBroadcaster {
       this.ws.on('open', () => {
         this.isConnecting = false;
         this.reconnectAttempts = 0;
-
-        // Register this MCP server's session with the hub
-        const sessionId = getCurrentSessionId();
-        if (sessionId) {
-          this.send({
-            type: 'mcp:register',
-            timestamp: new Date().toISOString(),
-            payload: { sessionId },
-          } as any);
-        }
 
         // Flush queued messages
         for (const event of this.messageQueue) {

@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as ticketStore from '../store/ticket-store.js';
-import * as sessionStore from '../store/session-store.js';
-import { getCurrentSessionId, getCurrentProjectId } from '../state.js';
+import { getCurrentProjectId } from '../state.js';
 import { broadcaster } from '../websocket/broadcaster.js';
 import type {
   TicketCreatedEvent,
@@ -37,11 +36,10 @@ export function registerTicketTools(server: McpServer): void {
       blockedBy: z.array(z.string()).optional().describe('Array of ticket IDs that block this ticket. REQUIRED for dependent tickets.'),
     },
     async ({ title, description, type, priority, category, blockedBy }) => {
-      const sessionId = getCurrentSessionId();
       const projectId = getCurrentProjectId();
 
-      if (!sessionId || !projectId) {
-        return { content: [{ type: 'text', text: 'Error: No session/project' }], isError: true };
+      if (!projectId) {
+        return { content: [{ type: 'text', text: 'Error: No project' }], isError: true };
       }
 
       if (!description || description.trim().length < 50) {
@@ -49,7 +47,7 @@ export function registerTicketTools(server: McpServer): void {
       }
 
       const ticket = await ticketStore.createTicket({
-        projectId, title, description, type, priority, category, blockedBy, createdBy: sessionId,
+        projectId, title, description, type, priority, category, blockedBy, createdBy: 'mcp',
       });
 
       broadcaster.broadcastToProject(projectId, {
@@ -143,25 +141,25 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
   );
 
   // Claim ticket
+  // Note: terminalSessionId is the ID from Tauri terminal backend, not MCP session
   server.tool(
     'ticket_claim',
-    'Claim a ticket to work on (supports short IDs)',
-    { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
-    async ({ ticketId }) => {
-      const sessionId = getCurrentSessionId();
+    'Claim a ticket to work on (supports short IDs). Requires terminalSessionId from Tauri backend.',
+    {
+      ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
+      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
+    },
+    async ({ ticketId, terminalSessionId }) => {
       const projectId = getCurrentProjectId();
-      if (!sessionId) {
-        return { content: [{ type: 'text', text: 'No session' }], isError: true };
-      }
+      const claimerId = terminalSessionId || 'mcp'; // Fallback to 'mcp' if no terminal session
 
-      const ticket = await ticketStore.claimTicket(ticketId, sessionId, projectId || undefined);
+      const ticket = await ticketStore.claimTicket(ticketId, claimerId, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot claim (not found or unavailable)' }], isError: true };
       }
 
-      sessionStore.setSessionCurrentTicket(sessionId, ticket.id);
       broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:claimed', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
+        type: 'ticket:claimed', timestamp: new Date().toISOString(), payload: { ticket, sessionId: claimerId },
       } as TicketClaimedEvent);
 
       return { content: [{ type: 'text', text: `Claimed: ${ticket.title}\n${ticket.description || ''}` }] };
@@ -172,22 +170,21 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
   server.tool(
     'ticket_release',
     'Release claimed ticket back to pool',
-    { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
-    async ({ ticketId }) => {
-      const sessionId = getCurrentSessionId();
+    {
+      ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
+      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
+    },
+    async ({ ticketId, terminalSessionId }) => {
       const projectId = getCurrentProjectId();
-      if (!sessionId) {
-        return { content: [{ type: 'text', text: 'No session' }], isError: true };
-      }
+      const claimerId = terminalSessionId || 'mcp';
 
-      const ticket = await ticketStore.releaseTicket(ticketId, sessionId, projectId || undefined);
+      const ticket = await ticketStore.releaseTicket(ticketId, claimerId, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot release' }], isError: true };
       }
 
-      sessionStore.setSessionCurrentTicket(sessionId, null);
       broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:released', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
+        type: 'ticket:released', timestamp: new Date().toISOString(), payload: { ticket, sessionId: claimerId },
       } as TicketReleasedEvent);
 
       return { content: [{ type: 'text', text: 'Released' }] };
@@ -198,15 +195,15 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
   server.tool(
     'ticket_start',
     'Mark claimed ticket as in_progress',
-    { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
-    async ({ ticketId }) => {
-      const sessionId = getCurrentSessionId();
+    {
+      ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
+      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
+    },
+    async ({ ticketId, terminalSessionId }) => {
       const projectId = getCurrentProjectId();
-      if (!sessionId) {
-        return { content: [{ type: 'text', text: 'No session' }], isError: true };
-      }
+      const claimerId = terminalSessionId || 'mcp';
 
-      const ticket = await ticketStore.startTicket(ticketId, sessionId, projectId || undefined);
+      const ticket = await ticketStore.startTicket(ticketId, claimerId, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot start' }], isError: true };
       }
@@ -253,24 +250,19 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     {
       ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
       summary: z.string().optional(),
+      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
     },
-    async ({ ticketId, summary }) => {
-      const sessionId = getCurrentSessionId();
+    async ({ ticketId, summary, terminalSessionId }) => {
       const projectId = getCurrentProjectId();
-      if (!sessionId) {
-        return { content: [{ type: 'text', text: 'No session' }], isError: true };
-      }
+      const claimerId = terminalSessionId || 'mcp';
 
-      const ticket = await ticketStore.completeTicket(ticketId, sessionId, { success: true, summary }, projectId || undefined);
+      const ticket = await ticketStore.completeTicket(ticketId, claimerId, { success: true, summary }, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot complete' }], isError: true };
       }
 
-      sessionStore.incrementSessionStats(sessionId, 'ticketsCompleted');
-      sessionStore.setSessionCurrentTicket(sessionId, null);
-
       broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:completed', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
+        type: 'ticket:completed', timestamp: new Date().toISOString(), payload: { ticket, sessionId: claimerId },
       } as TicketCompletedEvent);
 
       return { content: [{ type: 'text', text: 'Completed' }] };
@@ -284,24 +276,19 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     {
       ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
       error: z.string().optional(),
+      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
     },
-    async ({ ticketId, error }) => {
-      const sessionId = getCurrentSessionId();
+    async ({ ticketId, error, terminalSessionId }) => {
       const projectId = getCurrentProjectId();
-      if (!sessionId) {
-        return { content: [{ type: 'text', text: 'No session' }], isError: true };
-      }
+      const claimerId = terminalSessionId || 'mcp';
 
-      const ticket = await ticketStore.failTicket(ticketId, sessionId, error, projectId || undefined);
+      const ticket = await ticketStore.failTicket(ticketId, claimerId, error, projectId || undefined);
       if (!ticket) {
         return { content: [{ type: 'text', text: 'Cannot fail' }], isError: true };
       }
 
-      sessionStore.incrementSessionStats(sessionId, 'ticketsFailed');
-      sessionStore.setSessionCurrentTicket(sessionId, null);
-
       broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:failed', timestamp: new Date().toISOString(), payload: { ticket, sessionId, error },
+        type: 'ticket:failed', timestamp: new Date().toISOString(), payload: { ticket, sessionId: claimerId, error },
       } as TicketFailedEvent);
 
       return { content: [{ type: 'text', text: 'Failed' }] };
