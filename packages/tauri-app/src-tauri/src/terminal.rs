@@ -2,13 +2,35 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::fs;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use sysinfo::{ProcessRefreshKind, System, UpdateKind};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
+
+// Global counter for terminal numbering (monotonically increasing)
+static TERMINAL_COUNTER: AtomicUsize = AtomicUsize::new(0);
+const MAX_OUTPUT_BUFFER: usize = 1024 * 1024; // 1MB ring buffer
+
+#[cfg(target_os = "windows")]
+fn ensure_ps_shell_integration() -> Option<std::path::PathBuf> {
+    const SCRIPT: &str = include_str!("../../src/assets/shell-integration/awesome-claude.ps1");
+    let path = std::env::temp_dir().join("awesome-claude.ps1");
+
+    match fs::read_to_string(&path) {
+        Ok(existing) if existing == SCRIPT => {}
+        _ => {
+            if fs::write(&path, SCRIPT).is_err() {
+                return None;
+            }
+        }
+    }
+
+    Some(path)
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ChildProcessInfo {
@@ -39,9 +61,11 @@ pub struct TerminalSession {
     rows: Mutex<u16>,
     shell_pid: AtomicU32,
     child_processes: Mutex<Vec<ChildProcessInfo>>,
+    last_children_hash: Mutex<u64>,  // Hash for quick change detection
     // User-configurable metadata (source of truth)
     title: Mutex<String>,
     color: Mutex<Option<String>>,
+    output_buffer: Mutex<VecDeque<u8>>,
 }
 
 impl TerminalSession {
@@ -75,10 +99,33 @@ impl TerminalSession {
         *self.rows.lock() = rows;
         Ok(())
     }
+
+    fn buffer_output(&self, data: &[u8]) {
+        let mut buf = self.output_buffer.lock();
+        buf.extend(data);
+        if buf.len() > MAX_OUTPUT_BUFFER {
+            let overflow = buf.len() - MAX_OUTPUT_BUFFER;
+            for _ in 0..overflow {
+                buf.pop_front();
+            }
+        }
+    }
+
+    fn snapshot_output_buffer(&self) -> Vec<u8> {
+        let buf = self.output_buffer.lock();
+        buf.iter().copied().collect()
+    }
+}
+
+/// Shared state for the process monitor
+struct ProcessMonitorState {
+    sessions: Arc<Mutex<HashMap<String, Arc<TerminalSession>>>>,
+    app_handle: Mutex<Option<AppHandle>>,
+    monitor_running: AtomicBool,
 }
 
 pub struct TerminalManager {
-    sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
+    state: Arc<ProcessMonitorState>,
 }
 
 impl Default for TerminalManager {
@@ -90,8 +137,128 @@ impl Default for TerminalManager {
 impl TerminalManager {
     pub fn new() -> Self {
         Self {
-            sessions: Mutex::new(HashMap::new()),
+            state: Arc::new(ProcessMonitorState {
+                sessions: Arc::new(Mutex::new(HashMap::new())),
+                app_handle: Mutex::new(None),
+                monitor_running: AtomicBool::new(false),
+            }),
         }
+    }
+
+    /// Start the shared process monitor if not already running
+    fn ensure_process_monitor_running(&self, app_handle: AppHandle) {
+        // Store app_handle for later use
+        *self.state.app_handle.lock() = Some(app_handle.clone());
+
+        // Only start if not already running
+        if self.state.monitor_running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let state = Arc::clone(&self.state);
+        std::thread::spawn(move || {
+            let mut sys = System::new();
+
+            loop {
+                // Sleep at the start to allow initial session setup
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+
+                // Refresh all processes once per cycle
+                sys.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::All,
+                    true,
+                    ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
+                );
+
+                // Get app_handle
+                let app_handle = match state.app_handle.lock().clone() {
+                    Some(h) => h,
+                    None => continue,
+                };
+
+                // Collect session info to avoid holding lock during processing
+                let sessions_snapshot: Vec<(String, u32, bool)> = {
+                    let sessions = state.sessions.lock();
+                    if sessions.is_empty() {
+                        // No sessions, keep monitor alive but idle
+                        continue;
+                    }
+                    sessions.iter()
+                        .filter(|(_, s)| s.is_alive.load(Ordering::SeqCst))
+                        .map(|(id, s)| (id.clone(), s.shell_pid.load(Ordering::SeqCst), s.is_alive.load(Ordering::SeqCst)))
+                        .collect()
+                };
+
+                // Process each session using the already-loaded process data
+                for (session_id, shell_pid, _) in sessions_snapshot {
+                    if shell_pid == 0 {
+                        continue;
+                    }
+
+                    // Find ALL descendant processes (children, grandchildren, etc.)
+                    let mut descendants: Vec<ChildProcessInfo> = Vec::new();
+                    let mut pids_to_check: Vec<u32> = vec![shell_pid];
+                    let mut checked_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+                    checked_pids.insert(shell_pid);
+
+                    while let Some(parent_pid) = pids_to_check.pop() {
+                        for (pid, process) in sys.processes() {
+                            let pid_u32 = pid.as_u32();
+                            if checked_pids.contains(&pid_u32) {
+                                continue;
+                            }
+                            if let Some(proc_parent) = process.parent() {
+                                if proc_parent.as_u32() == parent_pid {
+                                    descendants.push(ChildProcessInfo {
+                                        pid: pid_u32,
+                                        name: process.name().to_string_lossy().to_string(),
+                                        cmd: process.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect::<Vec<_>>().join(" "),
+                                    });
+                                    pids_to_check.push(pid_u32);
+                                    checked_pids.insert(pid_u32);
+                                }
+                            }
+                        }
+                    }
+
+                    // Sort for consistent comparison
+                    descendants.sort_by_key(|p| p.pid);
+
+                    // Calculate hash for quick comparison
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    for p in &descendants {
+                        p.pid.hash(&mut hasher);
+                        p.name.hash(&mut hasher);
+                    }
+                    let new_hash = hasher.finish();
+
+                    // Update session if changed
+                    let should_emit = {
+                        let sessions = state.sessions.lock();
+                        if let Some(session) = sessions.get(&session_id) {
+                            let mut last_hash = session.last_children_hash.lock();
+                            if *last_hash != new_hash {
+                                *last_hash = new_hash;
+                                *session.child_processes.lock() = descendants.clone();
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    };
+
+                    if should_emit {
+                        let _ = app_handle.emit(
+                            &format!("terminal:children:{}", session_id),
+                            &descendants,
+                        );
+                    }
+                }
+            }
+        });
     }
 
     /// Create new session, returns session_id and shell_pid
@@ -142,6 +309,11 @@ impl TerminalManager {
                 if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
                     c.env("LOCALAPPDATA", localappdata);
                 }
+                if let Some(script_path) = ensure_ps_shell_integration() {
+                    let escaped = script_path.to_string_lossy().replace('\'', "''");
+                    let command = format!(". '{}'", escaped);
+                    c.args(["-ExecutionPolicy", "Bypass", "-Command", &command]);
+                }
                 c
             }
             #[cfg(not(target_os = "windows"))]
@@ -174,9 +346,9 @@ impl TerminalManager {
             .try_clone_reader()
             .map_err(|e| format!("Failed to get reader: {}", e))?;
 
-        // Generate default title based on existing session count
-        let session_count = self.sessions.lock().len();
-        let default_title = format!("Terminal {}", session_count + 1);
+        // Generate default title with monotonically increasing counter
+        let terminal_number = TERMINAL_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
+        let default_title = format!("Terminal {}", terminal_number);
 
         let session = Arc::new(TerminalSession {
             inner: Mutex::new(TerminalInner { pty_pair, writer }),
@@ -187,8 +359,10 @@ impl TerminalManager {
             rows: Mutex::new(rows),
             shell_pid: AtomicU32::new(shell_pid),
             child_processes: Mutex::new(Vec::new()),
+            last_children_hash: Mutex::new(0),
             title: Mutex::new(default_title),
             color: Mutex::new(None),
+            output_buffer: Mutex::new(VecDeque::new()),
         });
 
         // Reader thread - reads from PTY and sends raw bytes as base64
@@ -202,9 +376,9 @@ impl TerminalManager {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        // Send raw bytes as base64 if attached
+                        let data = &buf[..n];
+                        session_clone.buffer_output(data);
                         if session_clone.attached.load(Ordering::SeqCst) {
-                            let data = &buf[..n];
                             let encoded = BASE64.encode(data);
                             let _ = app_handle_clone
                                 .emit(&format!("terminal:data:{}", sid), &encoded);
@@ -223,76 +397,21 @@ impl TerminalManager {
             let _ = child.wait();
         });
 
-        // Child process monitor - tracks ALL descendant processes of the shell
-        let session_monitor = Arc::clone(&session);
-        let sid_monitor = session_id.clone();
-        let app_handle_monitor = app_handle.clone();
-        std::thread::spawn(move || {
-            let mut sys = System::new();
-            let mut last_children: Vec<ChildProcessInfo> = Vec::new();
+        // Insert session and start shared monitor
+        self.state.sessions.lock().insert(session_id.clone(), session);
 
-            while session_monitor.is_alive.load(Ordering::SeqCst) {
-                let shell_pid = session_monitor.shell_pid.load(Ordering::SeqCst);
-                if shell_pid == 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    continue;
-                }
+        // Ensure shared process monitor is running
+        self.ensure_process_monitor_running(app_handle.clone());
 
-                sys.refresh_processes_specifics(
-                    sysinfo::ProcessesToUpdate::All,
-                    true,
-                    ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
-                );
+        // Emit terminal-list-changed event
+        let _ = app_handle.emit("terminal-list-changed", ());
 
-                // Find ALL descendant processes (children, grandchildren, etc.)
-                let mut descendants: Vec<ChildProcessInfo> = Vec::new();
-                let mut pids_to_check: Vec<u32> = vec![shell_pid];
-                let mut checked_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
-                checked_pids.insert(shell_pid);
-
-                while let Some(parent_pid) = pids_to_check.pop() {
-                    for (pid, process) in sys.processes() {
-                        let pid_u32 = pid.as_u32();
-                        if checked_pids.contains(&pid_u32) {
-                            continue;
-                        }
-                        if let Some(proc_parent) = process.parent() {
-                            if proc_parent.as_u32() == parent_pid {
-                                descendants.push(ChildProcessInfo {
-                                    pid: pid_u32,
-                                    name: process.name().to_string_lossy().to_string(),
-                                    cmd: process.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect::<Vec<_>>().join(" "),
-                                });
-                                pids_to_check.push(pid_u32);
-                                checked_pids.insert(pid_u32);
-                            }
-                        }
-                    }
-                }
-
-                // Update session and send event if descendants changed
-                if descendants != last_children {
-                    // Store in session for API access
-                    *session_monitor.child_processes.lock() = descendants.clone();
-                    // Also emit event for real-time updates
-                    let _ = app_handle_monitor.emit(
-                        &format!("terminal:children:{}", sid_monitor),
-                        &descendants,
-                    );
-                    last_children = descendants;
-                }
-
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            }
-        });
-
-        self.sessions.lock().insert(session_id.clone(), session);
         Ok(TerminalCreateResult { session_id, shell_pid })
     }
 
     /// Attach to existing session
     pub fn attach(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let sessions = self.sessions.lock();
+        let sessions = self.state.sessions.lock();
         let session = sessions
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {}", session_id))?;
@@ -301,13 +420,36 @@ impl TerminalManager {
             return Err("Session is dead".to_string());
         }
 
-        session.attached.store(true, Ordering::SeqCst);
+        // IMPORTANT: Resize BEFORE setting attached to ensure correct dimensions
+        // before data starts flowing
         session.resize(cols, rows)?;
+        // Reset screen then replay buffered output so cursor state is realigned.
+        if let Some(app_handle) = self.state.app_handle.lock().clone() {
+            let reset = b"\x1b[2J\x1b[H";
+            let _ = app_handle.emit(
+                &format!("terminal:data:{}", session_id),
+                &BASE64.encode(reset),
+            );
+            let backlog = session.snapshot_output_buffer();
+            if !backlog.is_empty() {
+                let mut offset = 0;
+                while offset < backlog.len() {
+                    let end = (offset + 8192).min(backlog.len());
+                    let encoded = BASE64.encode(&backlog[offset..end]);
+                    let _ = app_handle.emit(
+                        &format!("terminal:data:{}", session_id),
+                        &encoded,
+                    );
+                    offset = end;
+                }
+            }
+        }
+        session.attached.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     pub fn detach(&self, session_id: &str) -> Result<(), String> {
-        let sessions = self.sessions.lock();
+        let sessions = self.state.sessions.lock();
         if let Some(session) = sessions.get(session_id) {
             session.attached.store(false, Ordering::SeqCst);
         }
@@ -315,7 +457,7 @@ impl TerminalManager {
     }
 
     pub fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
-        let sessions = self.sessions.lock();
+        let sessions = self.state.sessions.lock();
         let session = sessions
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {}", session_id))?;
@@ -323,23 +465,25 @@ impl TerminalManager {
     }
 
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let sessions = self.sessions.lock();
+        let sessions = self.state.sessions.lock();
         let session = sessions
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {}", session_id))?;
         session.resize(cols, rows)
     }
 
-    pub fn kill(&self, session_id: &str) -> Result<(), String> {
-        if let Some(session) = self.sessions.lock().remove(session_id) {
+    pub fn kill(&self, session_id: &str, app_handle: AppHandle) -> Result<(), String> {
+        if let Some(session) = self.state.sessions.lock().remove(session_id) {
             session.is_alive.store(false, Ordering::SeqCst);
+            // Emit terminal-list-changed event
+            let _ = app_handle.emit("terminal-list-changed", ());
         }
         Ok(())
     }
 
     /// List all sessions (for reconnection)
     pub fn list(&self) -> Vec<TerminalSessionInfo> {
-        self.sessions
+        self.state.sessions
             .lock()
             .iter()
             .map(|(id, s)| TerminalSessionInfo {
@@ -356,7 +500,7 @@ impl TerminalManager {
 
     /// Update terminal metadata (title, color)
     pub fn update(&self, session_id: &str, title: Option<String>, color: Option<Option<String>>) -> Result<(), String> {
-        let sessions = self.sessions.lock();
+        let sessions = self.state.sessions.lock();
         let session = sessions
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {}", session_id))?;

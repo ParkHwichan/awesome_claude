@@ -141,8 +141,9 @@ pub async fn terminal_resize(
 pub async fn terminal_kill(
     session_id: String,
     terminal_manager: State<'_, TerminalManager>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    terminal_manager.kill(&session_id)
+    terminal_manager.kill(&session_id, app_handle)
 }
 
 /// List all sessions
