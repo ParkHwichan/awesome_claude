@@ -3,21 +3,16 @@ import type { Task, TaskStatus } from './task.js';
 import type { Todo, TodoStatus, TodoProgress } from './todo.js';
 import type { Project } from './project.js';
 import type { Ticket, TicketStatus, TicketProgress } from './ticket.js';
-import type { Session, SessionStatus } from './session.js';
 
 /**
  * WebSocket event types for real-time updates
+ * Note: Session events are removed - session management is now handled by Tauri backend
  */
 export type EventType =
   // Project events
   | 'project:created'
   | 'project:updated'
   | 'project:deleted'
-  // Session events
-  | 'session:registered'
-  | 'session:updated'
-  | 'session:disconnected'
-  | 'session:status_changed'
   // Ticket events
   | 'ticket:created'
   | 'ticket:updated'
@@ -228,38 +223,6 @@ export type ProjectEvent =
   | ProjectUpdatedEvent
   | ProjectDeletedEvent;
 
-// Session events
-export interface SessionRegisteredEvent extends BaseEvent {
-  type: 'session:registered';
-  payload: Session;
-}
-
-export interface SessionUpdatedEvent extends BaseEvent {
-  type: 'session:updated';
-  payload: Session;
-}
-
-export interface SessionDisconnectedEvent extends BaseEvent {
-  type: 'session:disconnected';
-  payload: { id: string; projectId: string };
-}
-
-export interface SessionStatusChangedEvent extends BaseEvent {
-  type: 'session:status_changed';
-  payload: {
-    id: string;
-    projectId: string;
-    previousStatus: SessionStatus;
-    newStatus: SessionStatus;
-  };
-}
-
-export type SessionEvent =
-  | SessionRegisteredEvent
-  | SessionUpdatedEvent
-  | SessionDisconnectedEvent
-  | SessionStatusChangedEvent;
-
 // Ticket events
 export interface TicketCreatedEvent extends BaseEvent {
   type: 'ticket:created';
@@ -280,7 +243,7 @@ export interface TicketClaimedEvent extends BaseEvent {
   type: 'ticket:claimed';
   payload: {
     ticket: Ticket;
-    sessionId: string;
+    sessionId: string; // Now represents terminal sessionId, not MCP session
   };
 }
 
@@ -353,7 +316,6 @@ export interface DebugLogEvent extends BaseEvent {
 
 export type AppEvent =
   | ProjectEvent
-  | SessionEvent
   | TicketEvent
   | WorkflowEvent
   | TaskEvent
