@@ -3,16 +3,21 @@ import type { Task, TaskStatus } from './task.js';
 import type { Todo, TodoStatus, TodoProgress } from './todo.js';
 import type { Project } from './project.js';
 import type { Ticket, TicketStatus, TicketProgress } from './ticket.js';
+import type { Session, SessionStatus } from './session.js';
 
 /**
  * WebSocket event types for real-time updates
- * Note: Session events are removed - session management is now handled by Tauri backend
  */
 export type EventType =
   // Project events
   | 'project:created'
   | 'project:updated'
   | 'project:deleted'
+  // Session events
+  | 'session:registered'
+  | 'session:updated'
+  | 'session:disconnected'
+  | 'session:heartbeat'
   // Ticket events
   | 'ticket:created'
   | 'ticket:updated'
@@ -22,6 +27,7 @@ export type EventType =
   | 'ticket:completed'
   | 'ticket:failed'
   | 'ticket:status_changed'
+  | 'ticket:progress_updated'
   // Conversation events
   | 'conversation:message'
   // Debug events
@@ -223,6 +229,40 @@ export type ProjectEvent =
   | ProjectUpdatedEvent
   | ProjectDeletedEvent;
 
+// Session events
+export interface SessionRegisteredEvent extends BaseEvent {
+  type: 'session:registered';
+  payload: Session;
+}
+
+export interface SessionUpdatedEvent extends BaseEvent {
+  type: 'session:updated';
+  payload: Session;
+}
+
+export interface SessionDisconnectedEvent extends BaseEvent {
+  type: 'session:disconnected';
+  payload: {
+    id: string;
+    projectId?: string;
+  };
+}
+
+export interface SessionHeartbeatEvent extends BaseEvent {
+  type: 'session:heartbeat';
+  payload: {
+    id: string;
+    status: SessionStatus;
+    currentTicketId?: string;
+  };
+}
+
+export type SessionEvent =
+  | SessionRegisteredEvent
+  | SessionUpdatedEvent
+  | SessionDisconnectedEvent
+  | SessionHeartbeatEvent;
+
 // Ticket events
 export interface TicketCreatedEvent extends BaseEvent {
   type: 'ticket:created';
@@ -282,6 +322,16 @@ export interface TicketStatusChangedEvent extends BaseEvent {
   };
 }
 
+export interface TicketProgressUpdatedEvent extends BaseEvent {
+  type: 'ticket:progress_updated';
+  payload: {
+    ticketId: string;
+    projectId: string;
+    progress: number;
+    progressMessage?: string;
+  };
+}
+
 export type TicketEvent =
   | TicketCreatedEvent
   | TicketUpdatedEvent
@@ -290,7 +340,8 @@ export type TicketEvent =
   | TicketReleasedEvent
   | TicketCompletedEvent
   | TicketFailedEvent
-  | TicketStatusChangedEvent;
+  | TicketStatusChangedEvent
+  | TicketProgressUpdatedEvent;
 
 // Conversation events
 export interface ConversationMessageEvent extends BaseEvent {
@@ -316,6 +367,7 @@ export interface DebugLogEvent extends BaseEvent {
 
 export type AppEvent =
   | ProjectEvent
+  | SessionEvent
   | TicketEvent
   | WorkflowEvent
   | TaskEvent

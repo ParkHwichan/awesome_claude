@@ -1,6 +1,7 @@
 import type { ProjectSummary, Ticket } from '@awesome-claude/shared';
 import { useTerminalStore, type TerminalTab } from '@/store/terminal-store';
 import { cn } from '@/lib/utils';
+import { getAnimalEmoji } from '@/lib/ticket-utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   DropdownMenu,
@@ -22,24 +23,24 @@ import {
   CheckIcon,
   LayoutDashboardIcon,
   TerminalIcon,
+  CodeIcon,
   AlertTriangleIcon,
   TrashIcon,
-  SparklesIcon,
 } from 'lucide-react';
 import { FileExplorer } from '@/components/FileExplorer';
-import { AnimalIcon } from '@/components/Terminal';
 
 interface ProjectSidebarProps {
   projects: ProjectSummary[];
   tickets: Ticket[];
   selectedProjectId: string | null;
   selectedTicketId: string | null;
-  currentView: 'board' | 'terminal';
+  currentView: 'board' | 'terminal' | 'editor';
   onSelectProject: (id: string) => void;
   onSelectTicket: (id: string) => void;
-  onSelectView: (view: 'board' | 'terminal') => void;
+  onSelectView: (view: 'board' | 'terminal' | 'editor') => void;
   onDeleteProject: (id: string) => void;
   onCreateProject: () => void;
+  onFileOpen?: (path: string) => void;
 }
 
 export function ProjectSidebar({
@@ -53,6 +54,7 @@ export function ProjectSidebar({
   onSelectView,
   onDeleteProject,
   onCreateProject,
+  onFileOpen,
 }: ProjectSidebarProps) {
   const terminalTabs = useTerminalStore((state) => state.tabs);
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
@@ -205,6 +207,19 @@ export function ProjectSidebar({
                 <TerminalIcon className="w-4 h-4" />
                 <span>Terminal</span>
               </button>
+              <button
+                onClick={() => onSelectView('editor')}
+                className={cn(
+                  'w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] transition-colors',
+                  'hover:bg-sidebar-accent',
+                  currentView === 'editor'
+                    ? 'bg-sidebar-accent text-sidebar-foreground'
+                    : 'text-muted-foreground hover:text-sidebar-foreground'
+                )}
+              >
+                <CodeIcon className="w-4 h-4" />
+                <span>Editor</span>
+              </button>
             </div>
           )}
 
@@ -223,22 +238,17 @@ export function ProjectSidebar({
                       key={terminal.sessionId}
                       className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] hover:bg-sidebar-accent cursor-default"
                     >
-                      {/* Status indicators */}
-                      <div className="flex items-center gap-1 shrink-0">
-                        {claudeRunning && (
-                          <SparklesIcon className="w-3.5 h-3.5 text-primary" />
-                        )}
-                        {mcpRunning && terminal.iconIndex ? (
-                          <AnimalIcon index={terminal.iconIndex} size={16} className="shrink-0" />
-                        ) : terminal.color ? (
-                          <span
-                            className="w-3 h-3 rounded-full shrink-0"
-                            style={{ backgroundColor: terminal.color }}
-                          />
-                        ) : (
-                          <TerminalIcon className="w-3.5 h-3.5 text-muted-foreground" />
-                        )}
-                      </div>
+                      {/* Show emoji if terminal has animal name, otherwise terminal icon */}
+                      {getAnimalEmoji(terminal.title, true) ? (
+                        <span className="text-sm shrink-0">{getAnimalEmoji(terminal.title, true)}</span>
+                      ) : terminal.color ? (
+                        <span
+                          className="w-3 h-3 rounded-full shrink-0"
+                          style={{ backgroundColor: terminal.color }}
+                        />
+                      ) : (
+                        <TerminalIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                      )}
                       <span className="truncate flex-1 text-muted-foreground">
                         {terminal.title}
                       </span>
@@ -282,7 +292,7 @@ export function ProjectSidebar({
               <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 Files
               </div>
-              <FileExplorer workingDirectory={selectedProject.workingDirectory} />
+              <FileExplorer workingDirectory={selectedProject.workingDirectory} onFileOpen={onFileOpen} />
             </div>
           )}
 

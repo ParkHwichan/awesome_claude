@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as ticketStore from '../store/ticket-store.js';
-import { getCurrentProjectId } from '../state.js';
+import * as sessionStore from '../store/session-store.js';
+import { getCurrentProjectId, getCurrentSessionId } from '../state.js';
 import { broadcaster } from '../websocket/broadcaster.js';
 import type {
   TicketCreatedEvent,
@@ -11,7 +12,24 @@ import type {
   TicketReleasedEvent,
   TicketCompletedEvent,
   TicketFailedEvent,
+  SessionHeartbeatEvent,
 } from '@awesome-claude/shared';
+import {
+  isAppError,
+  formatErrorForMcp,
+  wrapUnknownError,
+  type AppErrorClass,
+} from '@awesome-claude/shared';
+
+// Helper to handle errors in tool handlers
+function handleToolError(error: unknown, operation: string): { content: { type: 'text'; text: string }[]; isError: true } {
+  const appError = isAppError(error) ? error : wrapUnknownError(error, { operation });
+  console.error(`[${operation}] ${appError.code}: ${appError.message}`, appError.context);
+  return {
+    content: [{ type: 'text', text: formatErrorForMcp(appError) }],
+    isError: true,
+  };
+}
 
 const STATUS_ENUM = z.enum(['pending', 'claimed', 'in_progress', 'completed', 'failed']);
 const PRIORITY_ENUM = z.enum(['low', 'medium', 'high', 'urgent']);
@@ -36,25 +54,119 @@ export function registerTicketTools(server: McpServer): void {
       blockedBy: z.array(z.string()).optional().describe('Array of ticket IDs that block this ticket. REQUIRED for dependent tickets.'),
     },
     async ({ title, description, type, priority, category, blockedBy }) => {
-      const projectId = getCurrentProjectId();
+      try {
+        const projectId = getCurrentProjectId();
 
-      if (!projectId) {
-        return { content: [{ type: 'text', text: 'Error: No project' }], isError: true };
+        if (!projectId) {
+          return { content: [{ type: 'text', text: 'Error [PROJECT_NOT_FOUND]: No active project' }], isError: true };
+        }
+
+        if (!description || description.trim().length < 50) {
+          return { content: [{ type: 'text', text: 'Error [INVALID_INPUT]: Description must be 50+ chars' }], isError: true };
+        }
+
+        const ticket = await ticketStore.createTicket({
+          projectId, title, description, type, priority, category, blockedBy, createdBy: 'mcp',
+        });
+
+        broadcaster.broadcastToProject(projectId, {
+          type: 'ticket:created', timestamp: new Date().toISOString(), payload: ticket,
+        } as TicketCreatedEvent);
+
+        return { content: [{ type: 'text', text: `Created. ID: ${ticket.id}` }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_create');
       }
+    }
+  );
 
-      if (!description || description.trim().length < 50) {
-        return { content: [{ type: 'text', text: 'Error: Description must be 50+ chars' }], isError: true };
+  // Batch create tickets with dependencies
+  const BatchTicketSchema = z.object({
+    title: z.string(),
+    description: z.string().describe('Implementation details (min 50 chars)'),
+    type: TYPE_ENUM.optional(),
+    priority: PRIORITY_ENUM.optional(),
+    category: CATEGORY_ENUM.optional(),
+    blockedByIndex: z.array(z.number()).optional().describe('Indexes of tickets in this batch that block this ticket'),
+  });
+
+  server.tool(
+    'ticket_create_batch',
+    'Create multiple tickets at once with dependencies. Use blockedByIndex to reference other tickets in the same batch by their array index (0-based). Returns all created ticket IDs.',
+    {
+      tickets: z.array(BatchTicketSchema).min(1).max(20).describe('Array of tickets to create. Max 20.'),
+    },
+    async ({ tickets }) => {
+      try {
+        const projectId = getCurrentProjectId();
+
+        if (!projectId) {
+          return { content: [{ type: 'text', text: 'Error [PROJECT_NOT_FOUND]: No active project' }], isError: true };
+        }
+
+        // Validate all tickets first
+        for (let i = 0; i < tickets.length; i++) {
+          const t = tickets[i];
+          if (!t.description || t.description.trim().length < 50) {
+            return {
+              content: [{ type: 'text', text: `Error [INVALID_INPUT]: Ticket ${i} (${t.title}) description must be 50+ chars` }],
+              isError: true
+            };
+          }
+          // Validate blockedByIndex references
+          if (t.blockedByIndex) {
+            for (const idx of t.blockedByIndex) {
+              if (idx < 0 || idx >= i) {
+                return {
+                  content: [{ type: 'text', text: `Error [INVALID_INPUT]: Ticket ${i} blockedByIndex ${idx} is invalid. Can only reference earlier tickets (0 to ${i - 1})` }],
+                  isError: true
+                };
+              }
+            }
+          }
+        }
+
+        // Create tickets in order, resolving dependencies
+        const createdIds: string[] = [];
+        const results: string[] = [];
+
+        for (let i = 0; i < tickets.length; i++) {
+          const t = tickets[i];
+
+          // Resolve blockedByIndex to actual ticket IDs
+          const blockedBy = t.blockedByIndex?.map(idx => createdIds[idx]) || undefined;
+
+          const ticket = await ticketStore.createTicket({
+            projectId,
+            title: t.title,
+            description: t.description,
+            type: t.type,
+            priority: t.priority,
+            category: t.category,
+            blockedBy,
+            createdBy: 'mcp',
+          });
+
+          createdIds.push(ticket.id);
+          results.push(`${i}: ${ticket.id.slice(0, 8)} | ${t.title}${blockedBy?.length ? ` [blocked by: ${t.blockedByIndex?.join(',')}]` : ''}`);
+
+          // Broadcast each created ticket
+          broadcaster.broadcastToProject(projectId, {
+            type: 'ticket:created',
+            timestamp: new Date().toISOString(),
+            payload: ticket,
+          } as TicketCreatedEvent);
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: `Created ${createdIds.length} tickets:\n${results.join('\n')}`
+          }]
+        };
+      } catch (error) {
+        return handleToolError(error, 'ticket_create_batch');
       }
-
-      const ticket = await ticketStore.createTicket({
-        projectId, title, description, type, priority, category, blockedBy, createdBy: 'mcp',
-      });
-
-      broadcaster.broadcastToProject(projectId, {
-        type: 'ticket:created', timestamp: new Date().toISOString(), payload: ticket,
-      } as TicketCreatedEvent);
-
-      return { content: [{ type: 'text', text: `Created. ID: ${ticket.id}` }] };
     }
   );
 
@@ -64,16 +176,17 @@ export function registerTicketTools(server: McpServer): void {
     'Get full ticket details by ID (supports short IDs)',
     { id: z.string().describe('Full or short (8+ char) ticket ID') },
     async ({ id }) => {
-      const projectId = getCurrentProjectId();
-      const ticket = await ticketStore.getTicket(id, projectId || undefined);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Not found' }], isError: true };
-      }
-      // Return essential fields only
-      return {
-        content: [{
-          type: 'text',
-          text: `ID: ${ticket.id}
+      try {
+        const projectId = getCurrentProjectId();
+        const ticket = await ticketStore.getTicket(id, projectId || undefined);
+        if (!ticket) {
+          return { content: [{ type: 'text', text: `Error [TICKET_NOT_FOUND]: Ticket not found: ${id}` }], isError: true };
+        }
+        // Return essential fields only
+        return {
+          content: [{
+            type: 'text',
+            text: `ID: ${ticket.id}
 Title: ${ticket.title}
 Status: ${ticket.status}
 Priority: ${ticket.priority}
@@ -81,8 +194,11 @@ Type: ${ticket.type}
 ${ticket.description ? `Description: ${ticket.description}` : ''}
 ${ticket.blockedBy?.length ? `BlockedBy: ${ticket.blockedBy.join(', ')}` : ''}
 ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
-        }]
-      };
+          }]
+        };
+      } catch (error) {
+        return handleToolError(error, 'ticket_get');
+      }
     }
   );
 
@@ -96,27 +212,31 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
       all: z.boolean().optional(),
     },
     async ({ status, priority, all }) => {
-      const projectId = getCurrentProjectId();
-      if (!projectId) {
-        return { content: [{ type: 'text', text: 'No project' }], isError: true };
+      try {
+        const projectId = getCurrentProjectId();
+        if (!projectId) {
+          return { content: [{ type: 'text', text: 'Error [PROJECT_NOT_FOUND]: No active project' }], isError: true };
+        }
+
+        let tickets = await ticketStore.listTickets(projectId, { status, priority });
+        if (!all && !status) {
+          tickets = tickets.filter(t => t.status !== 'completed' && t.status !== 'failed');
+        }
+
+        const lines = tickets.map(t =>
+          `[${t.priority[0].toUpperCase()}] ${t.id.slice(0,8)} | ${t.status.padEnd(11)} | ${t.title.slice(0,40)}`
+        );
+
+        const progress = await ticketStore.getTicketProgress(projectId);
+        return {
+          content: [{
+            type: 'text',
+            text: `Tickets (${tickets.length}): P=${progress.pending} C=${progress.claimed} W=${progress.inProgress} D=${progress.completed}\n${lines.join('\n') || 'None'}`
+          }]
+        };
+      } catch (error) {
+        return handleToolError(error, 'ticket_list');
       }
-
-      let tickets = await ticketStore.listTickets(projectId, { status, priority });
-      if (!all && !status) {
-        tickets = tickets.filter(t => t.status !== 'completed' && t.status !== 'failed');
-      }
-
-      const lines = tickets.map(t =>
-        `[${t.priority[0].toUpperCase()}] ${t.id.slice(0,8)} | ${t.status.padEnd(11)} | ${t.title.slice(0,40)}`
-      );
-
-      const progress = await ticketStore.getTicketProgress(projectId);
-      return {
-        content: [{
-          type: 'text',
-          text: `Tickets (${tickets.length}): P=${progress.pending} C=${progress.claimed} W=${progress.inProgress} D=${progress.completed}\n${lines.join('\n') || 'None'}`
-        }]
-      };
     }
   );
 
@@ -126,43 +246,62 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     'List pending tickets ready to claim',
     {},
     async () => {
-      const projectId = getCurrentProjectId();
-      if (!projectId) {
-        return { content: [{ type: 'text', text: 'No project' }], isError: true };
+      try {
+        const projectId = getCurrentProjectId();
+        if (!projectId) {
+          return { content: [{ type: 'text', text: 'Error [PROJECT_NOT_FOUND]: No active project' }], isError: true };
+        }
+
+        const tickets = await ticketStore.listAvailableTickets(projectId);
+        const lines = tickets.map(t =>
+          `[${t.priority[0].toUpperCase()}] ${t.id.slice(0,8)} | ${t.title.slice(0,50)}${t.blockedBy?.length ? ' [BLOCKED]' : ''}`
+        );
+
+        return { content: [{ type: 'text', text: lines.join('\n') || 'No available tickets' }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_list_available');
       }
-
-      const tickets = await ticketStore.listAvailableTickets(projectId);
-      const lines = tickets.map(t =>
-        `[${t.priority[0].toUpperCase()}] ${t.id.slice(0,8)} | ${t.title.slice(0,50)}${t.blockedBy?.length ? ' [BLOCKED]' : ''}`
-      );
-
-      return { content: [{ type: 'text', text: lines.join('\n') || 'No available tickets' }] };
     }
   );
 
   // Claim ticket
-  // Note: terminalSessionId is the ID from Tauri terminal backend, not MCP session
   server.tool(
     'ticket_claim',
-    'Claim a ticket to work on (supports short IDs). Requires terminalSessionId from Tauri backend.',
+    'Claim a ticket to work on (supports short IDs)',
     {
       ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
-      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
     },
-    async ({ ticketId, terminalSessionId }) => {
-      const projectId = getCurrentProjectId();
-      const claimerId = terminalSessionId || 'mcp'; // Fallback to 'mcp' if no terminal session
+    async ({ ticketId }) => {
+      try {
+        const projectId = getCurrentProjectId();
+        const sessionId = getCurrentSessionId() || 'mcp';
 
-      const ticket = await ticketStore.claimTicket(ticketId, claimerId, projectId || undefined);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Cannot claim (not found or unavailable)' }], isError: true };
+        const ticket = await ticketStore.claimTicket(ticketId, sessionId, projectId || undefined);
+        if (!ticket) {
+          return { content: [{ type: 'text', text: 'Error [TICKET_NOT_FOUND]: Cannot claim ticket' }], isError: true };
+        }
+
+        // Update session's current ticket
+        await sessionStore.sessionHeartbeat({
+          sessionId,
+          status: 'active',
+          currentTicketId: ticket.id,
+        });
+
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'ticket:claimed', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
+        } as TicketClaimedEvent);
+
+        // Broadcast session update
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'session:heartbeat', timestamp: new Date().toISOString(),
+          payload: { id: sessionId, status: 'active', currentTicketId: ticket.id },
+        } as SessionHeartbeatEvent);
+
+        return { content: [{ type: 'text', text: `Claimed: ${ticket.title}\n${ticket.description || ''}` }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_claim');
       }
-
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:claimed', timestamp: new Date().toISOString(), payload: { ticket, sessionId: claimerId },
-      } as TicketClaimedEvent);
-
-      return { content: [{ type: 'text', text: `Claimed: ${ticket.title}\n${ticket.description || ''}` }] };
     }
   );
 
@@ -172,22 +311,38 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     'Release claimed ticket back to pool',
     {
       ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
-      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
     },
-    async ({ ticketId, terminalSessionId }) => {
-      const projectId = getCurrentProjectId();
-      const claimerId = terminalSessionId || 'mcp';
+    async ({ ticketId }) => {
+      try {
+        const projectId = getCurrentProjectId();
+        const sessionId = getCurrentSessionId() || 'mcp';
 
-      const ticket = await ticketStore.releaseTicket(ticketId, claimerId, projectId || undefined);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Cannot release' }], isError: true };
+        const ticket = await ticketStore.releaseTicket(ticketId, sessionId, projectId || undefined);
+        if (!ticket) {
+          return { content: [{ type: 'text', text: 'Error [TICKET_NOT_FOUND]: Cannot release ticket' }], isError: true };
+        }
+
+        // Clear session's current ticket
+        await sessionStore.sessionHeartbeat({
+          sessionId,
+          status: 'idle',
+          currentTicketId: undefined,
+        });
+
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'ticket:released', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
+        } as TicketReleasedEvent);
+
+        // Broadcast session update
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'session:heartbeat', timestamp: new Date().toISOString(),
+          payload: { id: sessionId, status: 'idle', currentTicketId: undefined },
+        } as SessionHeartbeatEvent);
+
+        return { content: [{ type: 'text', text: 'Released' }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_release');
       }
-
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:released', timestamp: new Date().toISOString(), payload: { ticket, sessionId: claimerId },
-      } as TicketReleasedEvent);
-
-      return { content: [{ type: 'text', text: 'Released' }] };
     }
   );
 
@@ -197,22 +352,25 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     'Mark claimed ticket as in_progress',
     {
       ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
-      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
     },
-    async ({ ticketId, terminalSessionId }) => {
-      const projectId = getCurrentProjectId();
-      const claimerId = terminalSessionId || 'mcp';
+    async ({ ticketId }) => {
+      try {
+        const projectId = getCurrentProjectId();
+        const sessionId = getCurrentSessionId() || 'mcp';
 
-      const ticket = await ticketStore.startTicket(ticketId, claimerId, projectId || undefined);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Cannot start' }], isError: true };
+        const ticket = await ticketStore.startTicket(ticketId, sessionId, projectId || undefined);
+        if (!ticket) {
+          return { content: [{ type: 'text', text: 'Error [TICKET_NOT_FOUND]: Cannot start ticket' }], isError: true };
+        }
+
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'ticket:updated', timestamp: new Date().toISOString(), payload: ticket,
+        } as TicketUpdatedEvent);
+
+        return { content: [{ type: 'text', text: 'Started' }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_start');
       }
-
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:updated', timestamp: new Date().toISOString(), payload: ticket,
-      } as TicketUpdatedEvent);
-
-      return { content: [{ type: 'text', text: 'Started' }] };
     }
   );
 
@@ -230,16 +388,20 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
       blockedBy: z.array(z.string()).optional(),
     },
     async ({ ticketId, title, description, type, priority, category, blockedBy }) => {
-      const ticket = await ticketStore.updateTicket(ticketId, { title, description, type, priority, category, blockedBy });
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Not found' }], isError: true };
+      try {
+        const ticket = await ticketStore.updateTicket(ticketId, { title, description, type, priority, category, blockedBy });
+        if (!ticket) {
+          return { content: [{ type: 'text', text: `Error [TICKET_NOT_FOUND]: Ticket not found: ${ticketId}` }], isError: true };
+        }
+
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'ticket:updated', timestamp: new Date().toISOString(), payload: ticket,
+        } as TicketUpdatedEvent);
+
+        return { content: [{ type: 'text', text: 'Updated' }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_update');
       }
-
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:updated', timestamp: new Date().toISOString(), payload: ticket,
-      } as TicketUpdatedEvent);
-
-      return { content: [{ type: 'text', text: 'Updated' }] };
     }
   );
 
@@ -250,22 +412,38 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     {
       ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
       summary: z.string().optional(),
-      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
     },
-    async ({ ticketId, summary, terminalSessionId }) => {
-      const projectId = getCurrentProjectId();
-      const claimerId = terminalSessionId || 'mcp';
+    async ({ ticketId, summary }) => {
+      try {
+        const projectId = getCurrentProjectId();
+        const sessionId = getCurrentSessionId() || 'mcp';
 
-      const ticket = await ticketStore.completeTicket(ticketId, claimerId, { success: true, summary }, projectId || undefined);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Cannot complete' }], isError: true };
+        const ticket = await ticketStore.completeTicket(ticketId, sessionId, { success: true, summary }, projectId || undefined);
+        if (!ticket) {
+          return { content: [{ type: 'text', text: 'Error [TICKET_NOT_FOUND]: Cannot complete ticket' }], isError: true };
+        }
+
+        // Clear session's current ticket
+        await sessionStore.sessionHeartbeat({
+          sessionId,
+          status: 'idle',
+          currentTicketId: undefined,
+        });
+
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'ticket:completed', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
+        } as TicketCompletedEvent);
+
+        // Broadcast session update
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'session:heartbeat', timestamp: new Date().toISOString(),
+          payload: { id: sessionId, status: 'idle', currentTicketId: undefined },
+        } as SessionHeartbeatEvent);
+
+        return { content: [{ type: 'text', text: 'Completed' }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_complete');
       }
-
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:completed', timestamp: new Date().toISOString(), payload: { ticket, sessionId: claimerId },
-      } as TicketCompletedEvent);
-
-      return { content: [{ type: 'text', text: 'Completed' }] };
     }
   );
 
@@ -276,22 +454,38 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     {
       ticketId: z.string().describe('Full or short (8+ char) ticket ID'),
       error: z.string().optional(),
-      terminalSessionId: z.string().optional().describe('Terminal session ID from Tauri backend'),
     },
-    async ({ ticketId, error, terminalSessionId }) => {
-      const projectId = getCurrentProjectId();
-      const claimerId = terminalSessionId || 'mcp';
+    async ({ ticketId, error }) => {
+      try {
+        const projectId = getCurrentProjectId();
+        const sessionId = getCurrentSessionId() || 'mcp';
 
-      const ticket = await ticketStore.failTicket(ticketId, claimerId, error, projectId || undefined);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Cannot fail' }], isError: true };
+        const ticket = await ticketStore.failTicket(ticketId, sessionId, error, projectId || undefined);
+        if (!ticket) {
+          return { content: [{ type: 'text', text: 'Error [TICKET_NOT_FOUND]: Cannot fail ticket' }], isError: true };
+        }
+
+        // Clear session's current ticket
+        await sessionStore.sessionHeartbeat({
+          sessionId,
+          status: 'idle',
+          currentTicketId: undefined,
+        });
+
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'ticket:failed', timestamp: new Date().toISOString(), payload: { ticket, sessionId, error },
+        } as TicketFailedEvent);
+
+        // Broadcast session update
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'session:heartbeat', timestamp: new Date().toISOString(),
+          payload: { id: sessionId, status: 'idle', currentTicketId: undefined },
+        } as SessionHeartbeatEvent);
+
+        return { content: [{ type: 'text', text: 'Failed' }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_fail');
       }
-
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:failed', timestamp: new Date().toISOString(), payload: { ticket, sessionId: claimerId, error },
-      } as TicketFailedEvent);
-
-      return { content: [{ type: 'text', text: 'Failed' }] };
     }
   );
 
@@ -301,18 +495,22 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     'Delete a ticket',
     { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
     async ({ ticketId }) => {
-      const projectId = getCurrentProjectId();
-      const ticket = await ticketStore.getTicket(ticketId, projectId || undefined);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Not found' }], isError: true };
+      try {
+        const projectId = getCurrentProjectId();
+        const ticket = await ticketStore.getTicket(ticketId, projectId || undefined);
+        if (!ticket) {
+          return { content: [{ type: 'text', text: `Error [TICKET_NOT_FOUND]: Ticket not found: ${ticketId}` }], isError: true };
+        }
+
+        await ticketStore.deleteTicket(ticket.id);
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'ticket:deleted', timestamp: new Date().toISOString(), payload: { id: ticket.id, projectId: ticket.projectId },
+        } as TicketDeletedEvent);
+
+        return { content: [{ type: 'text', text: 'Deleted' }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_delete');
       }
-
-      await ticketStore.deleteTicket(ticket.id);
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:deleted', timestamp: new Date().toISOString(), payload: { id: ticket.id, projectId: ticket.projectId },
-      } as TicketDeletedEvent);
-
-      return { content: [{ type: 'text', text: 'Deleted' }] };
     }
   );
 
@@ -322,17 +520,21 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
     'Force release stuck ticket (admin)',
     { ticketId: z.string().describe('Full or short (8+ char) ticket ID') },
     async ({ ticketId }) => {
-      const projectId = getCurrentProjectId();
-      const ticket = await ticketStore.forceReleaseTicket(ticketId, projectId || undefined);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Not found' }], isError: true };
+      try {
+        const projectId = getCurrentProjectId();
+        const ticket = await ticketStore.forceReleaseTicket(ticketId, projectId || undefined);
+        if (!ticket) {
+          return { content: [{ type: 'text', text: `Error [TICKET_NOT_FOUND]: Ticket not found: ${ticketId}` }], isError: true };
+        }
+
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'ticket:released', timestamp: new Date().toISOString(), payload: { ticket, sessionId: 'force' },
+        } as TicketReleasedEvent);
+
+        return { content: [{ type: 'text', text: 'Force released' }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_force_release');
       }
-
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:released', timestamp: new Date().toISOString(), payload: { ticket, sessionId: 'force' },
-      } as TicketReleasedEvent);
-
-      return { content: [{ type: 'text', text: 'Force released' }] };
     }
   );
 
@@ -345,17 +547,21 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
       summary: z.string().optional(),
     },
     async ({ ticketId, summary }) => {
-      const projectId = getCurrentProjectId();
-      const ticket = await ticketStore.forceCompleteTicket(ticketId, { success: true, summary }, projectId || undefined);
-      if (!ticket) {
-        return { content: [{ type: 'text', text: 'Not found' }], isError: true };
+      try {
+        const projectId = getCurrentProjectId();
+        const ticket = await ticketStore.forceCompleteTicket(ticketId, { success: true, summary }, projectId || undefined);
+        if (!ticket) {
+          return { content: [{ type: 'text', text: `Error [TICKET_NOT_FOUND]: Ticket not found: ${ticketId}` }], isError: true };
+        }
+
+        broadcaster.broadcastToProject(ticket.projectId, {
+          type: 'ticket:completed', timestamp: new Date().toISOString(), payload: { ticket, sessionId: 'force' },
+        } as TicketCompletedEvent);
+
+        return { content: [{ type: 'text', text: 'Force completed' }] };
+      } catch (error) {
+        return handleToolError(error, 'ticket_force_complete');
       }
-
-      broadcaster.broadcastToProject(ticket.projectId, {
-        type: 'ticket:completed', timestamp: new Date().toISOString(), payload: { ticket, sessionId: 'force' },
-      } as TicketCompletedEvent);
-
-      return { content: [{ type: 'text', text: 'Force completed' }] };
     }
   );
 }

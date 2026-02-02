@@ -1,12 +1,15 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
-import type { Ticket, ChecklistItem, TicketComment, TicketTag } from '@awesome-claude/shared';
+import type { Ticket, ChecklistItem, TicketComment, TicketTag, TicketEventRecord } from '@awesome-claude/shared';
 import { useTerminalStore } from '@/store/terminal-store';
 import { cn } from '@/lib/utils';
+import { findTicketById } from '@/lib/ticket-utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Timeline } from '@/components/Timeline';
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -23,6 +26,7 @@ import {
   SquareIcon,
   CheckSquareIcon,
   TerminalIcon,
+  HistoryIcon,
 } from 'lucide-react';
 
 interface TicketDetailProps {
@@ -32,21 +36,29 @@ interface TicketDetailProps {
   onSelectTicket?: (ticketId: string) => void;
 }
 
-// Helper to find ticket by full or short ID
-function findTicketById(tickets: Ticket[], id: string): Ticket | undefined {
-  // Try exact match first
-  const exact = tickets.find(t => t.id === id);
-  if (exact) return exact;
-  // Try short ID match (starts with)
-  if (id.length >= 8) {
-    return tickets.find(t => t.id.startsWith(id));
-  }
-  return undefined;
-}
-
 export function TicketDetail({ ticket, tickets, onDelete, onSelectTicket }: TicketDetailProps) {
   const terminalTabs = useTerminalStore((state) => state.tabs);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [events, setEvents] = useState<TicketEventRecord[]>([]);
+  const [activeTab, setActiveTab] = useState('details');
+
+  // Fetch events when ticket changes
+  useEffect(() => {
+    if (!ticket) return;
+
+    const fetchEvents = async () => {
+      try {
+        const result = await invoke<TicketEventRecord[]>('get_ticket_events', { ticketId: ticket.id });
+        setEvents(result);
+      } catch (error) {
+        // Events not available yet - this is expected until backend is updated
+        console.debug('Events not available:', error);
+        setEvents([]);
+      }
+    };
+
+    fetchEvents();
+  }, [ticket?.id]);
 
   if (!ticket) {
     return (
@@ -158,9 +170,36 @@ export function TicketDetail({ ticket, tickets, onDelete, onSelectTicket }: Tick
         </div>
       </div>
 
-      {/* Content - Scrollable */}
-      <ScrollArea className="flex-1 overflow-auto">
-        <div className="px-6 py-4 space-y-5">
+      {/* Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0">
+        <div className="px-6 border-b border-border">
+          <TabsList className="h-9 bg-transparent p-0 gap-4">
+            <TabsTrigger
+              value="details"
+              className="h-9 px-0 pb-2 pt-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+            >
+              <FileTextIcon className="w-3.5 h-3.5 mr-1.5" />
+              Details
+            </TabsTrigger>
+            <TabsTrigger
+              value="activity"
+              className="h-9 px-0 pb-2 pt-1 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+            >
+              <HistoryIcon className="w-3.5 h-3.5 mr-1.5" />
+              Activity
+              {events.length > 0 && (
+                <Badge variant="secondary" className="ml-1.5 h-4 px-1 text-[10px]">
+                  {events.length}
+                </Badge>
+              )}
+            </TabsTrigger>
+          </TabsList>
+        </div>
+
+        {/* Details Tab */}
+        <TabsContent value="details" className="flex-1 mt-0 min-h-0">
+          <ScrollArea className="h-full">
+            <div className="px-6 py-4 space-y-5">
           {/* Tags */}
           {ticket.tags && ticket.tags.length > 0 && (
             <div>
@@ -523,8 +562,15 @@ export function TicketDetail({ ticket, tickets, onDelete, onSelectTicket }: Tick
               </div>
             </div>
           )}
-        </div>
-      </ScrollArea>
+            </div>
+          </ScrollArea>
+        </TabsContent>
+
+        {/* Activity Tab */}
+        <TabsContent value="activity" className="flex-1 mt-0 min-h-0">
+          <Timeline events={events} className="h-full" />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

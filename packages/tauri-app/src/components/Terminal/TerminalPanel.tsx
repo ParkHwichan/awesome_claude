@@ -21,6 +21,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { getAnimalEmoji } from '@/lib/ticket-utils';
 import {
   XIcon,
   PlusIcon,
@@ -30,14 +31,15 @@ import {
   PaletteIcon,
   SplitSquareHorizontalIcon,
   SplitSquareVerticalIcon,
-  SparklesIcon,
   MonitorIcon,
   ZapIcon,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { XtermTerminal } from './XtermTerminal';
-import { AnimalIcon, ANIMAL_ICON_INDICES } from './AnimalIcon';
+import { MacroPanel } from './MacroPanel';
+import { ANIMAL_ICON_INDICES } from './AnimalIcon';
 import {
   type TerminalInstance,
   type PanelGroup,
@@ -119,6 +121,8 @@ function loadTerminalState(workingDir: string): SavedTerminalState | null {
 
 export function TerminalPanel({ workingDir, projectName, onClose, isVisible = true }: TerminalPanelProps) {
   const setTerminalTabs = useTerminalStore((state) => state.setTabs);
+  const selectedSessionId = useTerminalStore((state) => state.selectedSessionId);
+  const selectTerminal = useTerminalStore((state) => state.selectTerminal);
 
   // Layout of panel groups
   const [layout, setLayout] = useState<LayoutNode | null>(null);
@@ -349,6 +353,52 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     restoreState();
   }, [workingDir]);
 
+  // Listen for terminal title updates from backend (when MCP session assigns animal name)
+  useEffect(() => {
+    const unlisten = listen<{ type: string; payload: { sessionId: string; title: string } }>(
+      'terminal-event',
+      (event) => {
+        if (event.payload.type === 'terminal:updated') {
+          const { sessionId, title } = event.payload.payload;
+
+          // Update terminal title
+          setTerminals((prev) => {
+            const newMap = new Map(prev);
+            for (const [id, terminal] of newMap) {
+              if (terminal.sessionId === sessionId) {
+                newMap.set(id, { ...terminal, title });
+                break;
+              }
+            }
+            return newMap;
+          });
+
+          // Update tab title
+          setPanelGroups((prev) => {
+            const newMap = new Map(prev);
+            for (const [groupId, group] of newMap) {
+              const updatedTabs = group.tabs.map((tab) => {
+                const terminal = terminals.get(tab.terminalId);
+                if (terminal?.sessionId === sessionId) {
+                  return { ...tab, title };
+                }
+                return tab;
+              });
+              if (updatedTabs !== group.tabs) {
+                newMap.set(groupId, { ...group, tabs: updatedTabs });
+              }
+            }
+            return newMap;
+          });
+        }
+      }
+    );
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [terminals]);
+
   // Save state to localStorage when layout/panelGroups/terminals change
   useEffect(() => {
     // Don't save if not initialized yet
@@ -517,6 +567,50 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     });
     setActiveGroupId(groupId);
   }, []);
+
+  // Handle external focus request (e.g., from SessionsBar click or sidebar click)
+  useEffect(() => {
+    if (!selectedSessionId) return;
+
+    // Case 1: MCP session ID (format: mcp-{pid})
+    // Session IDs from MCP server are in the format `mcp-{pid}`
+    const pidMatch = selectedSessionId.match(/^mcp-(\d+)$/);
+    if (pidMatch) {
+      const targetPid = parseInt(pidMatch[1], 10);
+
+      // Find the terminal with this child process PID
+      for (const [terminalId, terminal] of terminals.entries()) {
+        if (terminal.childProcesses?.some((p) => p.pid === targetPid)) {
+          // Find which group and tab contains this terminal
+          for (const [groupId, group] of panelGroups.entries()) {
+            const tab = group.tabs.find((t) => t.terminalId === terminalId);
+            if (tab) {
+              setActiveTab(groupId, tab.id);
+              selectTerminal(null);
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    // Case 2: xterm session ID - match terminal directly by sessionId
+    for (const [terminalId, terminal] of terminals.entries()) {
+      if (terminal.sessionId === selectedSessionId) {
+        for (const [groupId, group] of panelGroups.entries()) {
+          const tab = group.tabs.find((t) => t.terminalId === terminalId);
+          if (tab) {
+            setActiveTab(groupId, tab.id);
+            selectTerminal(null);
+            return;
+          }
+        }
+      }
+    }
+
+    // Clear even if not found (to prevent infinite loop)
+    selectTerminal(null);
+  }, [selectedSessionId, terminals, panelGroups, setActiveTab, selectTerminal]);
 
   const updateTabTitle = useCallback(async (groupId: string, tabId: string, title: string) => {
     // Find the terminal's sessionId
@@ -854,17 +948,14 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
                           draggedTab?.tabId === tab.id && 'opacity-50'
                         )}
                       >
-                        {tab.color && (
+                        {/* Show animal emoji if title is an animal name, otherwise terminal icon */}
+                        {getAnimalEmoji(tab.title, true) ? (
+                          <span className="text-base shrink-0">{getAnimalEmoji(tab.title, true)}</span>
+                        ) : tab.color ? (
                           <div
                             className="w-3 h-3 rounded-full shrink-0"
                             style={{ backgroundColor: tab.color }}
                           />
-                        )}
-                        {claudeRunning && (
-                          <SparklesIcon className="w-4 h-4 shrink-0 text-primary" />
-                        )}
-                        {mcpRunning && tabTerminal?.iconIndex ? (
-                          <AnimalIcon index={tabTerminal.iconIndex} size={18} className="shrink-0" />
                         ) : (
                           <TerminalIcon className="w-4 h-4 shrink-0" />
                         )}
@@ -1138,24 +1229,55 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
         )}
       </div>
 
-      {/* Main content */}
-      <div className="flex-1 min-h-0">
-        {!layout ? (
-          <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-            <TerminalIcon className="w-12 h-12 opacity-50" />
-            <p className="text-sm">No active terminals</p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={initializeLayout}
-              className="gap-2"
-            >
-              <PlusIcon className="w-4 h-4" />
-              New Terminal
-            </Button>
-          </div>
-        ) : (
-          renderLayout(layout)
+      {/* Main content with Macro Panel */}
+      <div className="flex-1 min-h-0 flex flex-col">
+        <div className="flex-1 min-h-0">
+          {!layout ? (
+            <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
+              <TerminalIcon className="w-12 h-12 opacity-50" />
+              <p className="text-sm">No active terminals</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={initializeLayout}
+                className="gap-2"
+              >
+                <PlusIcon className="w-4 h-4" />
+                New Terminal
+              </Button>
+            </div>
+          ) : (
+            renderLayout(layout)
+          )}
+        </div>
+
+        {/* Macro Panel */}
+        {layout && (
+          <MacroPanel
+            workingDir={workingDir}
+            terminalSessionId={(() => {
+              // Try active terminal first
+              if (activeGroupId) {
+                const group = panelGroups.get(activeGroupId);
+                if (group?.activeTabId) {
+                  const tab = group.tabs.find((t) => t.id === group.activeTabId);
+                  if (tab) {
+                    const terminal = terminals.get(tab.terminalId);
+                    if (terminal && !terminal.sessionId.startsWith('pending-')) {
+                      return terminal.sessionId;
+                    }
+                  }
+                }
+              }
+              // Fallback: find any valid terminal session
+              for (const terminal of terminals.values()) {
+                if (!terminal.sessionId.startsWith('pending-')) {
+                  return terminal.sessionId;
+                }
+              }
+              return null;
+            })()}
+          />
         )}
       </div>
 

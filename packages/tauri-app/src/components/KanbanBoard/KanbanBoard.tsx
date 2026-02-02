@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import type { Ticket, TicketStatus, TicketPriority } from '@awesome-claude/shared';
 import { cn } from '@/lib/utils';
+import { findTicketById, hasUnresolvedBlockers, getTypeIcon, getTypeColor } from '@/lib/ticket-utils';
+import { TICKET_STATUSES } from '@/lib/constants';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Progress } from '@/components/ui/progress';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -23,15 +26,8 @@ import {
   ArrowRightIcon,
   AlertTriangleIcon,
   LinkIcon,
-  BugIcon,
-  SparklesIcon,
-  BookOpenIcon,
-  LayersIcon,
-  ListTodoIcon,
   CalendarIcon,
   UserIcon,
-  RefreshCwIcon,
-  WrenchIcon,
 } from 'lucide-react';
 
 interface KanbanBoardProps {
@@ -47,79 +43,14 @@ const COLUMNS = [
   { id: 'completed', label: 'Completed', icon: CheckCircleIcon, color: 'text-success' },
 ] as const;
 
-const STATUSES: { value: TicketStatus; label: string }[] = [
-  { value: 'pending', label: 'Pending' },
-  { value: 'in_progress', label: 'In Progress' },
-  { value: 'completed', label: 'Completed' },
-];
-
-const getPriorityColor = (priority: string) => {
-  switch (priority) {
-    case 'urgent':
-      return 'bg-priority-urgent';
-    case 'high':
-      return 'bg-priority-high';
-    case 'medium':
-      return 'bg-priority-medium';
-    default:
-      return 'bg-priority-low';
-  }
-};
-
-const getPriorityBorder = (priority: string) => {
-  switch (priority) {
-    case 'urgent':
-      return 'border-l-priority-urgent';
-    case 'high':
-      return 'border-l-priority-high';
-    case 'medium':
-      return 'border-l-priority-medium';
-    default:
-      return 'border-l-priority-low';
-  }
-};
-
-const getTypeIcon = (type: string) => {
-  switch (type) {
-    case 'bug':
-      return BugIcon;
-    case 'feature':
-      return SparklesIcon;
-    case 'story':
-      return BookOpenIcon;
-    case 'epic':
-      return LayersIcon;
-    case 'refactor':
-      return RefreshCwIcon;
-    case 'chore':
-      return WrenchIcon;
-    default:
-      return ListTodoIcon;
-  }
-};
-
-// Helper to find ticket by full or short ID
-function findTicketById(tickets: Ticket[], id: string): Ticket | undefined {
-  const exact = tickets.find(t => t.id === id);
-  if (exact) return exact;
-  if (id.length >= 8) {
-    return tickets.find(t => t.id.startsWith(id));
-  }
-  return undefined;
-}
-
 export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: KanbanBoardProps) {
   const { updateTicket, deleteTicket } = useProjectStore();
   const [editingTicket, setEditingTicket] = useState<Ticket | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
 
-  // Helper to check if ticket has unresolved blockers
-  const hasUnresolvedBlockers = (ticket: Ticket) => {
-    return ticket.blockedBy?.some(blockerId => {
-      const blocker = findTicketById(tickets, blockerId);
-      if (!blocker) return false;
-      return blocker.status !== 'completed' && blocker.status !== 'archived';
-    }) ?? false;
+  // Helper to check if ticket has unresolved blockers (using shared util)
+  const checkHasUnresolvedBlockers = (ticket: Ticket) => {
+    return hasUnresolvedBlockers(ticket, tickets);
   };
 
   const getTicketsByStatus = (status: string) => {
@@ -128,11 +59,11 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
     }
     if (status === 'blocked') {
       // Pending tickets with unresolved blockers
-      return tickets.filter((t) => t.status === 'pending' && hasUnresolvedBlockers(t));
+      return tickets.filter((t) => t.status === 'pending' && checkHasUnresolvedBlockers(t));
     }
     if (status === 'pending') {
       // Pending tickets without blockers
-      return tickets.filter((t) => t.status === 'pending' && !hasUnresolvedBlockers(t));
+      return tickets.filter((t) => t.status === 'pending' && !checkHasUnresolvedBlockers(t));
     }
     return tickets.filter((t) => t.status === status);
   };
@@ -191,7 +122,7 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
                     </div>
                   ) : (
                     columnTickets.map((ticket) => {
-                      const isBlocked = hasUnresolvedBlockers(ticket);
+                      const isBlocked = checkHasUnresolvedBlockers(ticket);
                       const blocksCount = ticket.blocks?.length || 0;
                       const TypeIcon = getTypeIcon(ticket.type);
                       const checklistTotal = ticket.checklist?.length || 0;
@@ -295,6 +226,18 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
                                 </span>
                               )}
                             </div>
+                            {/* Progress bar for in_progress/claimed tickets */}
+                            {(ticket.status === 'in_progress' || ticket.status === 'claimed') && ticket.progress > 0 && (
+                              <div className="mt-2 space-y-1">
+                                <Progress value={ticket.progress} className="h-1" />
+                                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                  <span>{ticket.progress}%</span>
+                                  {ticket.progressMessage && (
+                                    <span className="truncate ml-2 text-muted-foreground/70">{ticket.progressMessage}</span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </button>
                         </ContextMenuTrigger>
                         <ContextMenuContent className="w-48">
@@ -308,7 +251,7 @@ export function KanbanBoard({ tickets, selectedTicketId, onSelectTicket }: Kanba
                               Move to
                             </ContextMenuSubTrigger>
                             <ContextMenuSubContent className="w-40">
-                              {STATUSES.filter((s) => s.value !== ticket.status && s.value !== 'claimed').map((status) => (
+                              {TICKET_STATUSES.filter((s) => s.value !== ticket.status).map((status) => (
                                 <ContextMenuItem
                                   key={status.value}
                                   onClick={() => handleMoveToStatus(ticket, status.value)}

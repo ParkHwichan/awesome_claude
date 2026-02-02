@@ -80,6 +80,10 @@ export interface Ticket {
   claimedBy?: string;  // session ID
   claimedAt?: string;
 
+  // Progress (auto-calculated from checklist)
+  progress: number;           // 0-100
+  progressMessage?: string;
+
   // Tracking
   createdBy: string;   // session ID that created this ticket
   createdAt: string;

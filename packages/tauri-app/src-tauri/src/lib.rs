@@ -1,8 +1,11 @@
 mod commands;
 mod database;
+mod macros;
+mod orchestrator;
 mod terminal;
 mod websocket;
 
+use orchestrator::OrchestratorManager;
 use terminal::TerminalManager;
 use websocket::WebSocketHub;
 use std::time::Duration;
@@ -16,6 +19,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(TerminalManager::new())
+        .manage(OrchestratorManager::new())
         .setup(|app| {
             println!("Awesome Claude started");
 
@@ -23,6 +27,32 @@ pub fn run() {
             if let Err(e) = database::run_migrations() {
                 eprintln!("Failed to run migrations: {}", e);
             }
+
+            // Ensure global ~/.claude/CLAUDE.md has awesome-claude rules
+            tauri::async_runtime::spawn(async {
+                match commands::ensure_global_claude_md().await {
+                    Ok(result) if result.updated => {
+                        println!("[awesome-claude] Updated global CLAUDE.md: {}", result.path);
+                    }
+                    Err(e) => {
+                        eprintln!("[awesome-claude] Failed to update global CLAUDE.md: {}", e);
+                    }
+                    _ => {}
+                }
+            });
+
+            // Ensure global ~/.claude/settings.json has awesome-claude hooks
+            tauri::async_runtime::spawn(async {
+                match commands::ensure_global_settings().await {
+                    Ok(result) if result.updated => {
+                        println!("[awesome-claude] Updated global settings.json (v{}): {}", result.version, result.path);
+                    }
+                    Err(e) => {
+                        eprintln!("[awesome-claude] Failed to update global settings.json: {}", e);
+                    }
+                    _ => {}
+                }
+            });
 
             // Start WebSocket hub server
             let app_handle = app.handle().clone();
@@ -72,8 +102,45 @@ pub fn run() {
             commands::terminal_kill,
             commands::terminal_list,
             commands::terminal_update,
+            commands::terminal_reset,
+            commands::terminal_soft_reset,
             commands::list_directory,
+            commands::read_file,
+            commands::write_file,
+            commands::create_file,
+            commands::create_directory,
+            commands::delete_path,
+            commands::rename_path,
+            commands::search_in_files,
+            commands::replace_in_file,
+            commands::git_status,
+            commands::git_diff,
+            commands::git_stage_file,
+            commands::git_unstage_file,
+            commands::git_discard_changes,
+            commands::find_tsconfig,
+            commands::resolve_import_path,
+            commands::check_skill_file,
+            commands::ensure_skill_file,
+            commands::check_global_claude_md,
+            commands::ensure_global_claude_md,
+            commands::ensure_global_settings,
+            commands::orchestrator_start,
+            commands::orchestrator_stop,
+            commands::orchestrator_send,
+            commands::orchestrator_is_running,
+            commands::orchestrator_list_running,
+            commands::get_ticket_events,
+            // Macro commands
+            macros::macro_list,
+            macros::macro_create,
+            macros::macro_update,
+            macros::macro_delete,
+            macros::macro_reorder,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to run Tauri application: {}", e);
+            std::process::exit(1);
+        });
 }

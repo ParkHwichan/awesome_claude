@@ -113,6 +113,16 @@
   ::-webkit-scrollbar-thumb:hover {
     background: var(--color-muted-foreground);
   }
+
+  /* Hidden scrollbar (scroll still works) */
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Linear-style utility classes */
@@ -187,4 +197,25 @@
 
 .gradient-border-animated:hover::before {
   opacity: 1;
+}
+
+/* Monaco editor go-to-line highlight animation */
+@keyframes go-to-line-flash {
+  0% {
+    background-color: rgba(124, 133, 214, 0.4);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.monaco-editor .go-to-line-highlight {
+  animation: go-to-line-flash 1.5s ease-out forwards;
+}
+
+.monaco-editor .go-to-line-glyph {
+  background-color: var(--color-primary);
+  width: 3px !important;
+  margin-left: 3px;
+  animation: go-to-line-flash 1.5s ease-out forwards;
 }

@@ -1,6 +1,26 @@
-# Awesome Claude - Project Guide
+# Awesome Claude
 
-Multi-session task management system for Claude Code. Enables multiple Claude Code sessions to work on tickets within projects.
+## Why
+
+Claude Code 세션들은 서로 독립적이라 협업이 안 된다. 같은 프로젝트에서 여러 세션이 동시에 작업하면 뭘 하는지 서로 모르고, 중복 작업이나 충돌이 발생한다.
+
+**해결책**: 티켓 시스템으로 작업을 나누고, 각 세션이 티켓을 claim해서 작업한다.
+
+```
+세션 A: ticket_claim("로그인 기능") → 작업 중
+세션 B: ticket_list() → "로그인 기능은 A가 작업 중" 확인 → 다른 티켓 선택
+```
+
+## Architecture
+
+```
+Claude Code 세션 ──(MCP Protocol)──▶ MCP Server ──(WebSocket)──▶ Tauri 앱
+     │                                   │                          │
+     │ ticket_claim()                    │ SQLite 저장              │ 실시간 UI 업데이트
+     │ ticket_complete()                 │ 상태 관리                │ 칸반 보드
+     ▼                                   ▼                          ▼
+  코드 작업                          중앙 조율                   사람이 모니터링
+```
 
 ## Project Structure
 
@@ -17,6 +37,40 @@ packages/
 pnpm install         # Install dependencies (no build needed for MCP)
 pnpm dev:tauri       # Optional: Start Tauri desktop app
 ```
+
+## Features
+
+### MCP Server (Claude Code용)
+
+| 기능 | 설명 |
+|------|------|
+| 프로젝트 자동 감지 | working directory 기반으로 프로젝트 자동 매칭 |
+| 티켓 생성 | `ticket_create` - 작업 단위 생성 |
+| 티켓 claim | `ticket_claim` - 세션이 티켓 가져가기 (중복 방지) |
+| 티켓 완료/실패 | `ticket_complete`, `ticket_fail` - 결과 기록 |
+| 실시간 동기화 | WebSocket으로 Tauri 앱에 상태 브로드캐스트 |
+
+### Tauri 앱 (모니터링용)
+
+| 기능 | 설명 |
+|------|------|
+| 칸반 보드 | 티켓 상태별 시각화, 드래그앤드롭 |
+| 파일 탐색기 | 프로젝트 디렉토리 트리 |
+| 에디터 | Monaco 기반 파일 편집, 탭 관리 |
+| 터미널 | xterm.js 기반 멀티 터미널 |
+| Git 패널 | 변경사항 확인, diff 뷰어 |
+
+### 티켓 워크플로우
+
+```
+pending → claimed → in_progress → completed
+                                → failed
+```
+
+- **pending**: 아직 아무도 안 가져감
+- **claimed**: 세션이 가져감 (다른 세션은 claim 불가)
+- **in_progress**: 작업 중
+- **completed/failed**: 완료 또는 실패
 
 ## Design System
 

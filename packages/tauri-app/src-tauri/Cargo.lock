@@ -104,6 +104,7 @@ dependencies = [
  "futures-util",
  "parking_lot",
  "portable-pty",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
@@ -115,7 +116,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "uuid",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

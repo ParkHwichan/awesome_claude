@@ -64,12 +64,13 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   const db = getDb();
 
   // Get all projects with aggregated counts using raw SQL for subqueries
-  // Note: Sessions are now managed by Tauri backend, so activeSessionCount is always 0
+  // Session timeout: 5 minutes
+  const timeoutThreshold = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const rows = await db.all(sql`
     SELECT
       p.*,
       (SELECT COUNT(*) FROM tickets WHERE project_id = p.id) as ticket_count,
-      0 as active_session_count,
+      (SELECT COUNT(*) FROM sessions WHERE project_id = p.id AND status != 'disconnected' AND last_heartbeat > ${timeoutThreshold}) as active_session_count,
       (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status = 'pending') as pending_tickets,
       (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status IN ('claimed', 'in_progress')) as in_progress_tickets,
       (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status = 'completed') as completed_tickets

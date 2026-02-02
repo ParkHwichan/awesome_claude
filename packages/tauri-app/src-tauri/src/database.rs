@@ -17,14 +17,7 @@ pub fn get_connection() -> Result<Connection> {
 
 /// Run database migrations to ensure schema is up to date
 pub fn run_migrations() -> Result<()> {
-    let conn = get_connection()?;
-
-    // Ensure icon_index column exists in sessions table
-    let _ = conn.execute(
-        "ALTER TABLE sessions ADD COLUMN icon_index INTEGER",
-        [],
-    ); // Ignore error if column already exists
-
+    // No migrations needed - MCP server handles schema management
     Ok(())
 }
 
@@ -57,18 +50,12 @@ pub struct ProjectSummary {
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
-    pub project_id: String,
-    pub ppid: i32,
-    pub name: Option<String>,
-    pub model: Option<String>,
+    pub project_id: Option<String>,
+    pub name: String,
     pub status: String,
-    pub connected_at: String,
-    pub last_active_at: String,
-    pub disconnected_at: Option<String>,
     pub current_ticket_id: Option<String>,
-    pub tickets_completed: i32,
-    pub tickets_failed: i32,
-    pub icon_index: Option<i32>,
+    pub last_heartbeat: String,
+    pub created_at: String,
     pub metadata: Option<String>,
 }
 
@@ -142,29 +129,22 @@ pub fn list_projects() -> Result<Vec<ProjectSummary>> {
 pub fn list_sessions() -> Result<Vec<Session>> {
     let conn = get_connection()?;
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, ppid, name, model, status, connected_at, last_active_at,
-                disconnected_at, current_ticket_id, tickets_completed, tickets_failed, icon_index, metadata
+        "SELECT id, project_id, name, status, current_ticket_id, last_heartbeat, created_at, metadata
          FROM sessions
          WHERE status != 'disconnected'
-         ORDER BY last_active_at DESC"
+         ORDER BY last_heartbeat DESC"
     )?;
 
     let rows = stmt.query_map([], |row| {
         Ok(Session {
             id: row.get(0)?,
             project_id: row.get(1)?,
-            ppid: row.get(2)?,
-            name: row.get(3)?,
-            model: row.get(4)?,
-            status: row.get(5)?,
-            connected_at: row.get(6)?,
-            last_active_at: row.get(7)?,
-            disconnected_at: row.get(8)?,
-            current_ticket_id: row.get(9)?,
-            tickets_completed: row.get(10)?,
-            tickets_failed: row.get(11)?,
-            icon_index: row.get(12)?,
-            metadata: row.get(13)?,
+            name: row.get(2)?,
+            status: row.get(3)?,
+            current_ticket_id: row.get(4)?,
+            last_heartbeat: row.get(5)?,
+            created_at: row.get(6)?,
+            metadata: row.get(7)?,
         })
     })?;
 
@@ -174,84 +154,28 @@ pub fn list_sessions() -> Result<Vec<Session>> {
 pub fn cleanup_dead_sessions() -> Result<usize> {
     let conn = get_connection()?;
 
-    // Get all active sessions
-    let mut stmt = conn.prepare(
-        "SELECT id, ppid, name FROM sessions WHERE status != 'disconnected'"
+    // Clean up sessions that haven't had a heartbeat in 5 minutes
+    // Sessions are now managed by MCP server heartbeats
+    let result = conn.execute(
+        "UPDATE sessions SET status = 'disconnected'
+         WHERE status != 'disconnected'
+         AND datetime(last_heartbeat) < datetime('now', '-5 minutes')",
+        [],
     )?;
 
-    let sessions: Vec<(String, i32, Option<String>)> = stmt.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    })?.filter_map(|r| r.ok()).collect();
+    if result > 0 {
+        println!("[Cleanup] Marked {} stale sessions as disconnected", result);
 
-    if !sessions.is_empty() {
-        println!("[Cleanup] Checking {} active sessions...", sessions.len());
+        // Release claimed tickets from disconnected sessions
+        conn.execute(
+            "UPDATE tickets SET claimed_by = NULL, claimed_at = NULL, status = 'pending'
+             WHERE claimed_by IN (SELECT id FROM sessions WHERE status = 'disconnected')
+             AND status NOT IN ('completed', 'failed')",
+            [],
+        )?;
     }
 
-    let mut cleaned = 0;
-    for (id, ppid, name) in sessions {
-        let alive = ppid > 0 && is_process_alive(ppid as u32);
-        if !alive {
-            // Release claimed tickets back to pending
-            conn.execute(
-                "UPDATE tickets SET claimed_by = NULL, claimed_at = NULL, status = 'pending'
-                 WHERE claimed_by = ? AND status NOT IN ('completed', 'failed')",
-                [&id]
-            )?;
-
-            // Mark session as disconnected
-            conn.execute(
-                "UPDATE sessions SET status = 'disconnected', disconnected_at = datetime('now'), current_ticket_id = NULL WHERE id = ?",
-                [&id]
-            )?;
-            println!("[Cleanup] Dead session: {} '{}' (ppid: {} - process not found)", id, name.unwrap_or_default(), ppid);
-            cleaned += 1;
-        } else {
-            println!("[Cleanup] Session alive: {} '{}' (ppid: {})", id, name.unwrap_or_default(), ppid);
-        }
-    }
-
-    Ok(cleaned)
-}
-
-#[cfg(target_os = "windows")]
-fn is_process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows_sys::Win32::System::Threading::{OpenProcess, GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        // Check if handle is null (invalid)
-        if handle.is_null() {
-            println!("[ProcessCheck] PID {} - OpenProcess failed (access denied or not found)", pid);
-            return false;
-        }
-
-        let mut exit_code: u32 = 0;
-        let result = GetExitCodeProcess(handle, &mut exit_code);
-        CloseHandle(handle);
-
-        if result == 0 {
-            println!("[ProcessCheck] PID {} - GetExitCodeProcess failed", pid);
-            return false;
-        }
-
-        // STILL_ACTIVE = 259
-        let is_alive = exit_code == (STILL_ACTIVE as u32);
-        if !is_alive {
-            println!("[ProcessCheck] PID {} - Process exited with code {}", pid, exit_code);
-        }
-        is_alive
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn is_process_alive(pid: u32) -> bool {
-    use std::process::Command;
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    Ok(result)
 }
 
 fn parse_json(s: Option<String>) -> Option<Value> {
@@ -370,6 +294,31 @@ pub fn delete_ticket(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Get project by working directory (returns None if not found)
+pub fn get_project_by_directory(working_directory: &str) -> Result<Option<Project>> {
+    let conn = get_connection()?;
+
+    let project = conn
+        .query_row(
+            "SELECT id, name, description, working_directory, created_at, updated_at, metadata FROM projects WHERE working_directory = ?",
+            [working_directory],
+            |row| {
+                Ok(Project {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    working_directory: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    metadata: row.get(6)?,
+                })
+            },
+        )
+        .ok();
+
+    Ok(project)
+}
+
 pub fn create_project(name: &str, working_directory: &str) -> Result<Project> {
     let conn = get_connection()?;
 
@@ -429,12 +378,14 @@ pub fn delete_project(id: &str) -> Result<()> {
 pub fn mark_session_disconnected(session_id: &str) -> Result<(String,)> {
     let conn = get_connection()?;
 
-    // Get project_id first
-    let project_id: String = conn.query_row(
+    // Get project_id first (may be NULL in new schema)
+    let project_id: Option<String> = conn.query_row(
         "SELECT project_id FROM sessions WHERE id = ?",
         [session_id],
         |row| row.get(0),
-    )?;
+    ).ok();
+
+    let project_id = project_id.unwrap_or_else(|| "unknown".to_string());
 
     // Release any claimed tickets
     conn.execute(
@@ -445,11 +396,55 @@ pub fn mark_session_disconnected(session_id: &str) -> Result<(String,)> {
 
     // Update session status
     conn.execute(
-        "UPDATE sessions SET status = 'disconnected', disconnected_at = datetime('now'), current_ticket_id = NULL WHERE id = ?",
+        "UPDATE sessions SET status = 'disconnected', current_ticket_id = NULL WHERE id = ?",
         [session_id],
     )?;
 
     println!("[DB] Marked session {} as disconnected (project: {})", session_id, project_id);
 
     Ok((project_id,))
+}
+
+// ============ Ticket Events ============
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketEvent {
+    pub id: String,
+    pub ticket_id: String,
+    pub project_id: String,
+    pub event_type: String,
+    pub session_id: Option<String>,
+    pub previous_value: Option<Value>,
+    pub new_value: Option<Value>,
+    pub metadata: Option<Value>,
+    pub timestamp: String,
+}
+
+pub fn list_ticket_events(ticket_id: &str) -> Result<Vec<TicketEvent>> {
+    let conn = get_connection()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, ticket_id, project_id, event_type, session_id,
+                previous_value, new_value, metadata, timestamp
+         FROM ticket_events
+         WHERE ticket_id = ?
+         ORDER BY timestamp DESC
+         LIMIT 100"
+    )?;
+
+    let rows = stmt.query_map([ticket_id], |row| {
+        Ok(TicketEvent {
+            id: row.get(0)?,
+            ticket_id: row.get(1)?,
+            project_id: row.get(2)?,
+            event_type: row.get(3)?,
+            session_id: row.get(4)?,
+            previous_value: parse_json(row.get(5)?),
+            new_value: parse_json(row.get(6)?),
+            metadata: parse_json(row.get(7)?),
+            timestamp: row.get(8)?,
+        })
+    })?;
+
+    rows.collect()
 }

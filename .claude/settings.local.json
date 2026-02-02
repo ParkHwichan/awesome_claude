@@ -1,0 +1,7 @@
+{
+  "enabledMcpjsonServers": [
+    "awesome-claude",
+    "shadcn"
+  ],
+  "enableAllProjectMcpServers": true
+}

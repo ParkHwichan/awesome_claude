@@ -50,7 +50,7 @@ export function closeDatabase(): void {
   }
 }
 
-const CURRENT_VERSION = 9;
+const CURRENT_VERSION = 13;
 
 function runMigrations(libsqlClient: Client, dbPath: string): void {
   // Use a version file since libsql client is async-only
@@ -106,6 +106,9 @@ function runMigrations(libsqlClient: Client, dbPath: string): void {
         blocked_by TEXT,
         blocks TEXT,
         checklist TEXT,
+        comments TEXT,
+        tags TEXT,
+        category TEXT,
         claimed_by TEXT,
         claimed_at TEXT,
         created_by TEXT NOT NULL,
@@ -114,8 +117,7 @@ function runMigrations(libsqlClient: Client, dbPath: string): void {
         completed_at TEXT,
         result TEXT,
         metadata TEXT,
-        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-        FOREIGN KEY (claimed_by) REFERENCES sessions(id) ON DELETE SET NULL
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
       );
       CREATE TABLE IF NOT EXISTS workflows (
         id TEXT PRIMARY KEY,
@@ -258,6 +260,146 @@ function runMigrations(libsqlClient: Client, dbPath: string): void {
       // Ignore errors
     }
     version = 9;
+  }
+
+  // Migration to remove FK constraint from tickets.claimed_by
+  // SQLite requires table recreation to remove FK constraints
+  if (version < 10) {
+    console.error('Running migration to version 10: Removing FK constraint from tickets.claimed_by');
+    try {
+      // Disable FK checks during migration
+      libsqlClient.executeMultiple(`
+        PRAGMA foreign_keys = OFF;
+
+        -- Create new table without the FK constraint on claimed_by
+        CREATE TABLE IF NOT EXISTS tickets_new (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          priority TEXT NOT NULL DEFAULT 'medium',
+          type TEXT NOT NULL DEFAULT 'task',
+          due_date TEXT,
+          blocked_by TEXT,
+          blocks TEXT,
+          checklist TEXT,
+          comments TEXT,
+          tags TEXT,
+          category TEXT,
+          claimed_by TEXT,
+          claimed_at TEXT,
+          created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT,
+          result TEXT,
+          metadata TEXT,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
+        -- Copy data from old table
+        INSERT INTO tickets_new SELECT
+          id, project_id, title, description, status, priority, type,
+          due_date, blocked_by, blocks, checklist, comments, tags, category,
+          claimed_by, claimed_at, created_by, created_at, updated_at,
+          completed_at, result, metadata
+        FROM tickets;
+
+        -- Drop old table and rename new one
+        DROP TABLE tickets;
+        ALTER TABLE tickets_new RENAME TO tickets;
+
+        -- Recreate indexes
+        CREATE INDEX IF NOT EXISTS idx_tickets_project_id ON tickets(project_id);
+        CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+        CREATE INDEX IF NOT EXISTS idx_tickets_claimed_by ON tickets(claimed_by);
+        CREATE INDEX IF NOT EXISTS idx_tickets_priority ON tickets(priority);
+
+        PRAGMA foreign_keys = ON;
+      `);
+    } catch (e) {
+      console.error('Migration 10 error:', e);
+    }
+    version = 10;
+  }
+
+  // Migration to recreate sessions table with simplified structure
+  if (version < 11) {
+    console.error('Running migration to version 11: Recreating sessions table with simplified structure');
+    try {
+      libsqlClient.executeMultiple(`
+        PRAGMA foreign_keys = OFF;
+
+        -- Drop old sessions table and recreate with new structure
+        DROP TABLE IF EXISTS sessions;
+
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          project_id TEXT,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          current_ticket_id TEXT,
+          last_heartbeat TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          metadata TEXT,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+        CREATE INDEX IF NOT EXISTS idx_sessions_last_heartbeat ON sessions(last_heartbeat);
+
+        PRAGMA foreign_keys = ON;
+      `);
+    } catch (e) {
+      console.error('Migration 11 error:', e);
+    }
+    version = 11;
+  }
+
+  // Migration for progress tracking
+  if (version < 12) {
+    console.error('Running migration to version 12: Adding progress columns to tickets');
+    try {
+      libsqlClient.executeMultiple(`
+        ALTER TABLE tickets ADD COLUMN progress INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE tickets ADD COLUMN progress_message TEXT;
+      `);
+    } catch {
+      // Columns may already exist
+    }
+    version = 12;
+  }
+
+  // Migration for Event Sourcing
+  if (version < 13) {
+    console.error('Running migration to version 13: Adding ticket_events table for event sourcing');
+    try {
+      libsqlClient.executeMultiple(`
+        CREATE TABLE IF NOT EXISTS ticket_events (
+          id TEXT PRIMARY KEY,
+          ticket_id TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          session_id TEXT,
+          previous_value TEXT,
+          new_value TEXT,
+          metadata TEXT,
+          timestamp TEXT NOT NULL,
+          FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ticket_events_ticket_id ON ticket_events(ticket_id);
+        CREATE INDEX IF NOT EXISTS idx_ticket_events_project_id ON ticket_events(project_id);
+        CREATE INDEX IF NOT EXISTS idx_ticket_events_timestamp ON ticket_events(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_ticket_events_type ON ticket_events(event_type);
+      `);
+    } catch (e) {
+      console.error('Migration 13 error:', e);
+    }
+    version = 13;
   }
 
   writeFileSync(versionFile, String(CURRENT_VERSION));

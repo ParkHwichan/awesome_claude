@@ -29,9 +29,7 @@ portable-pty = "0.8"
 parking_lot = "0.12"
 base64 = "0.22"
 sysinfo = "0.32"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+regex = "1"
 
 [features]
 default = ["custom-protocol"]

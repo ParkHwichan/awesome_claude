@@ -12,7 +12,17 @@ import { useTerminalHistory } from '@/hooks/useTerminalHistory';
 import { BlockOverlay } from './BlockOverlay';
 import { TerminalInput } from './TerminalInput';
 import { Button } from '@/components/ui/button';
-import { ArrowDownIcon } from 'lucide-react';
+import { ArrowDownIcon, SparklesIcon } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 interface TerminalCreateResult {
   sessionId: string;
@@ -41,6 +51,14 @@ interface ChildProcessInfo {
   cmd: string;
 }
 
+interface SkillCheckResult {
+  exists: boolean;
+  path: string;
+  currentVersion: string | null;
+  latestVersion: string;
+  needsUpdate: boolean;
+}
+
 export function XtermTerminal({
   sessionId,
   workingDir,
@@ -56,6 +74,10 @@ export function XtermTerminal({
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [terminal, setTerminal] = useState<Terminal | null>(null);
   const [childProcesses, setChildProcesses] = useState<ChildProcessInfo[]>([]);
+
+  // Skill dialog state
+  const [showSkillDialog, setShowSkillDialog] = useState(false);
+  const [pendingCommand, setPendingCommand] = useState<string | null>(null);
   const childProcessesRef = useRef<ChildProcessInfo[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -91,18 +113,69 @@ export function XtermTerminal({
     searchHistory,
   } = useTerminalHistory(workingDir);
 
-  // Handle command submission from custom input
-  const handleCommandSubmit = useCallback(async (command: string) => {
+  // Execute command (send to terminal)
+  const executeCommand = useCallback(async (command: string) => {
     const sid = actualSessionIdRef.current;
     if (sid && command) {
-      // Send command text first
       await invoke('terminal_write', { sessionId: sid, data: command }).catch(console.error);
-      // Small delay then send Enter separately
       setTimeout(() => {
         invoke('terminal_write', { sessionId: sid, data: '\r' }).catch(console.error);
       }, 50);
     }
   }, []);
+
+  // Handle command submission from custom input
+  const handleCommandSubmit = useCallback(async (command: string) => {
+    const trimmed = command.trim();
+
+    // Check if command starts with "claude"
+    if (trimmed === 'claude' || trimmed.startsWith('claude ')) {
+      try {
+        const result = await invoke<SkillCheckResult>('check_skill_file', { workingDir });
+
+        if (!result.exists) {
+          // Skill file doesn't exist - show dialog
+          setPendingCommand(command);
+          setShowSkillDialog(true);
+          return;
+        }
+      } catch (err) {
+        console.error('Failed to check skill file:', err);
+        // Continue with command execution on error
+      }
+    }
+
+    // Execute command normally
+    await executeCommand(command);
+  }, [workingDir, executeCommand]);
+
+  // Handle skill dialog response
+  const handleSkillDialogConfirm = useCallback(async () => {
+    try {
+      // Create skill file in project
+      await invoke('ensure_skill_file', { workingDir });
+    } catch (err) {
+      console.error('Failed to create skill file:', err);
+    }
+
+    // Execute the pending command
+    if (pendingCommand) {
+      await executeCommand(pendingCommand);
+    }
+
+    setShowSkillDialog(false);
+    setPendingCommand(null);
+  }, [workingDir, pendingCommand, executeCommand]);
+
+  const handleSkillDialogCancel = useCallback(async () => {
+    // Execute command without creating skill
+    if (pendingCommand) {
+      await executeCommand(pendingCommand);
+    }
+
+    setShowSkillDialog(false);
+    setPendingCommand(null);
+  }, [pendingCommand, executeCommand]);
 
   // Handle raw key input (for interactive menus - arrow keys, enter, escape)
   const handleRawKey = useCallback((key: string) => {
@@ -186,19 +259,55 @@ export function XtermTerminal({
     terminal.unicode.activeVersion = '11';
 
     // Load WebGL addon for GPU-accelerated rendering (if enabled)
+    // Keep ref for context loss recovery
     let webglAddon: WebglAddon | null = null;
-    if (webglEnabled) {
+    let webglRecoveryAttempts = 0;
+    const MAX_WEBGL_RECOVERY_ATTEMPTS = 3;
+
+    const loadWebglAddon = () => {
+      if (!webglEnabled) return;
       try {
         webglAddon = new WebglAddon();
         webglAddon.onContextLoss(() => {
-          // WebGL context lost - dispose and fall back to canvas renderer
+          // WebGL context lost - dispose and attempt recovery
+          console.warn('[Terminal] WebGL context lost, disposing addon');
           webglAddon?.dispose();
+          webglAddon = null;
+
+          // Attempt automatic recovery after delay (GPU driver recovery, system sleep, etc.)
+          if (webglRecoveryAttempts < MAX_WEBGL_RECOVERY_ATTEMPTS) {
+            webglRecoveryAttempts++;
+            console.log(`[Terminal] Attempting WebGL recovery (${webglRecoveryAttempts}/${MAX_WEBGL_RECOVERY_ATTEMPTS})`);
+            setTimeout(() => {
+              try {
+                const newWebglAddon = new WebglAddon();
+                newWebglAddon.onContextLoss(() => {
+                  console.warn('[Terminal] WebGL context lost again, falling back to canvas');
+                  newWebglAddon.dispose();
+                  webglAddon = null;
+                });
+                terminal.loadAddon(newWebglAddon);
+                webglAddon = newWebglAddon;
+                console.log('[Terminal] WebGL renderer recovered');
+                // Reset recovery counter on success
+                webglRecoveryAttempts = 0;
+              } catch (e) {
+                console.warn('[Terminal] WebGL recovery failed, using canvas renderer:', e);
+              }
+            }, 1000);
+          } else {
+            console.warn('[Terminal] Max WebGL recovery attempts reached, staying with canvas renderer');
+          }
         });
         terminal.loadAddon(webglAddon);
         console.log('[Terminal] WebGL renderer enabled');
       } catch (e) {
         console.warn('WebGL addon failed to load, using canvas renderer:', e);
       }
+    };
+
+    if (webglEnabled) {
+      loadWebglAddon();
     } else {
       console.log('[Terminal] Canvas renderer (WebGL disabled)');
     }
@@ -211,23 +320,11 @@ export function XtermTerminal({
     const handleMouseDown = () => terminal.focus();
     container.addEventListener('mousedown', handleMouseDown);
 
-    // Handle Ctrl+C and Ctrl+V
+    // Handle Ctrl+C (Ctrl+V is handled by xterm's default paste via onData)
     terminal.attachCustomKeyEventHandler((event) => {
       // Only handle keydown events
       if (event.type !== 'keydown') {
         return true;
-      }
-
-      // Ctrl+V or Cmd+V for paste
-      if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
-        navigator.clipboard.readText().then((text) => {
-          if (text && actualSessionIdRef.current) {
-            invoke('terminal_write', { sessionId: actualSessionIdRef.current, data: text }).catch(console.error);
-          }
-        }).catch((err) => {
-          console.error('Clipboard read failed:', err);
-        });
-        return false; // Prevent default handling
       }
 
       // Ctrl+C or Cmd+C
@@ -244,6 +341,40 @@ export function XtermTerminal({
           }
           return false; // We handled it
         }
+      }
+
+      // Ctrl+V or Cmd+V - Paste from clipboard
+      if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
+        event.preventDefault();
+        event.stopPropagation();
+        navigator.clipboard.readText().then((text) => {
+          if (text && actualSessionIdRef.current) {
+            invoke('terminal_write', { sessionId: actualSessionIdRef.current, data: text }).catch(console.error);
+          }
+        }).catch(console.error);
+        return false; // We handled it
+      }
+
+      // Ctrl+Shift+R - Reset terminal (fixes cursor sync issues)
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'R') {
+        if (actualSessionIdRef.current) {
+          console.log('[Terminal] Soft reset triggered');
+          invoke('terminal_soft_reset', { sessionId: actualSessionIdRef.current }).catch(console.error);
+          // Also reset xterm's internal state
+          terminal.reset();
+        }
+        return false;
+      }
+
+      // Ctrl+Shift+Alt+R - Hard reset terminal (clears buffer)
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.altKey && event.key === 'R') {
+        if (actualSessionIdRef.current) {
+          console.log('[Terminal] Hard reset triggered');
+          invoke('terminal_reset', { sessionId: actualSessionIdRef.current }).catch(console.error);
+          terminal.reset();
+          terminal.clear();
+        }
+        return false;
       }
 
       return true; // Allow other keys
@@ -565,8 +696,6 @@ export function XtermTerminal({
         // Refit on tab activation since visibility changes don't trigger ResizeObserver.
         refitAndResize('tab-active');
         terminal.focus();
-      } else if (terminal) {
-        terminal.focus();
       }
     }
   }, [isInteractive, refitAndResize]);
@@ -746,9 +875,38 @@ export function XtermTerminal({
           searchHistory={searchHistory}
           addToHistory={addToHistory}
           workingDir={workingDir}
-          disabled={!isConnected || !isInteractive}
+          disabled={!isConnected}
         />
       </div>
+
+      {/* Skill installation dialog */}
+      <AlertDialog open={showSkillDialog} onOpenChange={setShowSkillDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <SparklesIcon className="w-5 h-5 text-primary" />
+              Add Awesome Claude Skill?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <p>
+                The <code className="bg-muted px-1 py-0.5 rounded text-foreground">awesome-claude</code> skill
+                enables ticket-based task coordination for Claude Code.
+              </p>
+              <p className="text-muted-foreground text-sm">
+                This creates <code className="bg-muted px-1 py-0.5 rounded">.claude/skills/awesome-claude/SKILL.md</code> in your project.
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleSkillDialogCancel}>
+              Skip
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={handleSkillDialogConfirm}>
+              Add Skill
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

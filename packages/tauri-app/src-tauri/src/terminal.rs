@@ -370,7 +370,7 @@ impl TerminalManager {
         let sid = session_id.clone();
         let app_handle_clone = app_handle.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; 8192];  // 8KB chunks for reduced syscall overhead
 
             loop {
                 match reader.read(&mut buf) {
@@ -470,6 +470,59 @@ impl TerminalManager {
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {}", session_id))?;
         session.resize(cols, rows)
+    }
+
+    /// Reset terminal state and clear buffer - fixes cursor sync issues
+    pub fn reset(&self, session_id: &str) -> Result<(), String> {
+        let sessions = self.state.sessions.lock();
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Session not found: {}", session_id))?;
+
+        // Clear the output buffer
+        {
+            let mut buf = session.output_buffer.lock();
+            buf.clear();
+        }
+
+        // Send RIS (Reset to Initial State) to PTY
+        // This resets: cursor position, attributes, modes, tabs, character sets
+        let ris = b"\x1bc";
+        session.write(ris)?;
+
+        // Also send to frontend to reset xterm state
+        if let Some(app_handle) = self.state.app_handle.lock().clone() {
+            let _ = app_handle.emit(
+                &format!("terminal:data:{}", session_id),
+                &BASE64.encode(ris),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Soft reset - clear screen and redraw prompt without full reset
+    pub fn soft_reset(&self, session_id: &str) -> Result<(), String> {
+        let sessions = self.state.sessions.lock();
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Session not found: {}", session_id))?;
+
+        // DECSTR (Soft Terminal Reset) + clear screen + home cursor
+        // Then send Ctrl+L to redraw prompt
+        let reset_seq = b"\x1b[!p\x1b[2J\x1b[H\x0c";
+        session.write(reset_seq)?;
+
+        if let Some(app_handle) = self.state.app_handle.lock().clone() {
+            // Send clear + home to frontend
+            let frontend_reset = b"\x1b[2J\x1b[H";
+            let _ = app_handle.emit(
+                &format!("terminal:data:{}", session_id),
+                &BASE64.encode(frontend_reset),
+            );
+        }
+
+        Ok(())
     }
 
     pub fn kill(&self, session_id: &str, app_handle: AppHandle) -> Result<(), String> {

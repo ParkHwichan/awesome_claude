@@ -1,5 +1,17 @@
 import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
 
+// Sessions table
+export const sessions = sqliteTable('sessions', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
+  name: text('name').notNull(),
+  status: text('status').notNull().default('active'),
+  currentTicketId: text('current_ticket_id'),
+  lastHeartbeat: text('last_heartbeat').notNull(),
+  createdAt: text('created_at').notNull(),
+  metadata: text('metadata'), // JSON string
+});
+
 // Projects table
 export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
@@ -30,6 +42,8 @@ export const tickets = sqliteTable('tickets', {
   category: text('category'), // ticket category
   claimedBy: text('claimed_by'), // Terminal sessionId (simple text, no FK)
   claimedAt: text('claimed_at'),
+  progress: integer('progress').notNull().default(0), // 0-100, auto-calculated from checklist
+  progressMessage: text('progress_message'),
   createdBy: text('created_by').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -84,7 +98,23 @@ export const todos = sqliteTable('todos', {
   linkedTaskId: text('linked_task_id').references(() => tasks.id, { onDelete: 'set null' }),
 });
 
+// Ticket Events table (Event Sourcing)
+export const ticketEvents = sqliteTable('ticket_events', {
+  id: text('id').primaryKey(),
+  ticketId: text('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  eventType: text('event_type').notNull(), // 'created', 'claimed', 'started', 'completed', etc.
+  sessionId: text('session_id'), // Who triggered the event
+  previousValue: text('previous_value'), // JSON - state before change
+  newValue: text('new_value'), // JSON - state after change
+  metadata: text('metadata'), // JSON - additional context
+  timestamp: text('timestamp').notNull(),
+});
+
 // Type exports for use in application
+export type Session = typeof sessions.$inferSelect;
+export type NewSession = typeof sessions.$inferInsert;
+
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
 
@@ -99,3 +129,6 @@ export type NewTask = typeof tasks.$inferInsert;
 
 export type Todo = typeof todos.$inferSelect;
 export type NewTodo = typeof todos.$inferInsert;
+
+export type TicketEventRow = typeof ticketEvents.$inferSelect;
+export type NewTicketEventRow = typeof ticketEvents.$inferInsert;
