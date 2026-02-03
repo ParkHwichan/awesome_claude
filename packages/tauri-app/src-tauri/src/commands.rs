@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use tauri::State;
+use tauri::{Emitter, State};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,14 +62,43 @@ pub async fn update_ticket(
     description: Option<String>,
     status: String,
     priority: String,
+    app_handle: tauri::AppHandle,
 ) -> Result<Ticket, String> {
-    database::update_ticket(&id, &title, description.as_deref(), &status, &priority)
-        .map_err(|e| e.to_string())
+    let ticket = database::update_ticket(&id, &title, description.as_deref(), &status, &priority)
+        .map_err(|e| e.to_string())?;
+
+    // Emit event for real-time sync
+    let event = serde_json::json!({
+        "type": "ticket:updated",
+        "timestamp": chrono_now(),
+        "payload": ticket
+    });
+    let _ = app_handle.emit("mcp-event", event);
+
+    Ok(ticket)
 }
 
 #[tauri::command]
-pub async fn delete_ticket(id: String) -> Result<(), String> {
-    database::delete_ticket(&id).map_err(|e| e.to_string())
+pub async fn delete_ticket(id: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    // Get ticket info before deletion for the event
+    let tickets = database::list_tickets().map_err(|e| e.to_string())?;
+    let ticket = tickets.iter().find(|t| t.id == id);
+    let project_id = ticket.map(|t| t.project_id.clone()).unwrap_or_default();
+
+    database::delete_ticket(&id).map_err(|e| e.to_string())?;
+
+    // Emit event for real-time sync
+    let event = serde_json::json!({
+        "type": "ticket:deleted",
+        "timestamp": chrono_now(),
+        "payload": {
+            "id": id,
+            "projectId": project_id
+        }
+    });
+    let _ = app_handle.emit("mcp-event", event);
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -311,8 +340,11 @@ pub async fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
         let file_name = entry.file_name().to_string_lossy().to_string();
         let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
 
-        // Skip hidden files (starting with .) unless they're common directories
-        if file_name.starts_with('.') && !matches!(file_name.as_str(), ".git" | ".vscode" | ".config" | ".claude" | ".github" | ".env" | ".env.local") {
+        // Skip hidden files (starting with .) unless they're common directories or .env* files
+        if file_name.starts_with('.')
+            && !matches!(file_name.as_str(), ".git" | ".vscode" | ".config" | ".claude" | ".github")
+            && !file_name.starts_with(".env")
+        {
             continue;
         }
 
@@ -1851,4 +1883,25 @@ pub async fn orchestrator_list_running(
 #[tauri::command]
 pub async fn get_ticket_events(ticket_id: String) -> Result<Vec<TicketEvent>, String> {
     database::list_ticket_events(&ticket_id).map_err(|e| e.to_string())
+}
+
+// ============ Helper Functions ============
+
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = duration.as_secs();
+    let millis = duration.subsec_millis();
+    format!(
+        "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        1970 + secs / 31536000,
+        (secs % 31536000) / 2592000 + 1,
+        (secs % 2592000) / 86400 + 1,
+        (secs % 86400) / 3600,
+        (secs % 3600) / 60,
+        secs % 60,
+        millis
+    )
 }

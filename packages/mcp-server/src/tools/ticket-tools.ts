@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as ticketStore from '../store/ticket-store.js';
-import * as sessionStore from '../store/session-store.js';
 import { getCurrentProjectId, getCurrentSessionId } from '../state.js';
 import { broadcaster } from '../websocket/broadcaster.js';
 import type {
@@ -12,7 +11,6 @@ import type {
   TicketReleasedEvent,
   TicketCompletedEvent,
   TicketFailedEvent,
-  SessionHeartbeatEvent,
 } from '@awesome-claude/shared';
 import {
   isAppError,
@@ -281,22 +279,9 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
           return { content: [{ type: 'text', text: 'Error [TICKET_NOT_FOUND]: Cannot claim ticket' }], isError: true };
         }
 
-        // Update session's current ticket
-        await sessionStore.sessionHeartbeat({
-          sessionId,
-          status: 'active',
-          currentTicketId: ticket.id,
-        });
-
         broadcaster.broadcastToProject(ticket.projectId, {
           type: 'ticket:claimed', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
         } as TicketClaimedEvent);
-
-        // Broadcast session update
-        broadcaster.broadcastToProject(ticket.projectId, {
-          type: 'session:heartbeat', timestamp: new Date().toISOString(),
-          payload: { id: sessionId, status: 'active', currentTicketId: ticket.id },
-        } as SessionHeartbeatEvent);
 
         return { content: [{ type: 'text', text: `Claimed: ${ticket.title}\n${ticket.description || ''}` }] };
       } catch (error) {
@@ -322,22 +307,9 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
           return { content: [{ type: 'text', text: 'Error [TICKET_NOT_FOUND]: Cannot release ticket' }], isError: true };
         }
 
-        // Clear session's current ticket
-        await sessionStore.sessionHeartbeat({
-          sessionId,
-          status: 'idle',
-          currentTicketId: undefined,
-        });
-
         broadcaster.broadcastToProject(ticket.projectId, {
           type: 'ticket:released', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
         } as TicketReleasedEvent);
-
-        // Broadcast session update
-        broadcaster.broadcastToProject(ticket.projectId, {
-          type: 'session:heartbeat', timestamp: new Date().toISOString(),
-          payload: { id: sessionId, status: 'idle', currentTicketId: undefined },
-        } as SessionHeartbeatEvent);
 
         return { content: [{ type: 'text', text: 'Released' }] };
       } catch (error) {
@@ -423,22 +395,9 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
           return { content: [{ type: 'text', text: 'Error [TICKET_NOT_FOUND]: Cannot complete ticket' }], isError: true };
         }
 
-        // Clear session's current ticket
-        await sessionStore.sessionHeartbeat({
-          sessionId,
-          status: 'idle',
-          currentTicketId: undefined,
-        });
-
         broadcaster.broadcastToProject(ticket.projectId, {
           type: 'ticket:completed', timestamp: new Date().toISOString(), payload: { ticket, sessionId },
         } as TicketCompletedEvent);
-
-        // Broadcast session update
-        broadcaster.broadcastToProject(ticket.projectId, {
-          type: 'session:heartbeat', timestamp: new Date().toISOString(),
-          payload: { id: sessionId, status: 'idle', currentTicketId: undefined },
-        } as SessionHeartbeatEvent);
 
         return { content: [{ type: 'text', text: 'Completed' }] };
       } catch (error) {
@@ -465,22 +424,9 @@ ${ticket.blocks?.length ? `Blocks: ${ticket.blocks.join(', ')}` : ''}`
           return { content: [{ type: 'text', text: 'Error [TICKET_NOT_FOUND]: Cannot fail ticket' }], isError: true };
         }
 
-        // Clear session's current ticket
-        await sessionStore.sessionHeartbeat({
-          sessionId,
-          status: 'idle',
-          currentTicketId: undefined,
-        });
-
         broadcaster.broadcastToProject(ticket.projectId, {
           type: 'ticket:failed', timestamp: new Date().toISOString(), payload: { ticket, sessionId, error },
         } as TicketFailedEvent);
-
-        // Broadcast session update
-        broadcaster.broadcastToProject(ticket.projectId, {
-          type: 'session:heartbeat', timestamp: new Date().toISOString(),
-          payload: { id: sessionId, status: 'idle', currentTicketId: undefined },
-        } as SessionHeartbeatEvent);
 
         return { content: [{ type: 'text', text: 'Failed' }] };
       } catch (error) {

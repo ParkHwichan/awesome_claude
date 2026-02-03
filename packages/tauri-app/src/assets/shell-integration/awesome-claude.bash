@@ -48,15 +48,7 @@ PROMPT_COMMAND='__ac_precmd'
 # Set up preexec using DEBUG trap
 trap '__ac_preexec' DEBUG
 
-# Custom PS1 with OSC 133 markers
-__ac_prompt() {
-    __ac_osc133_a
-    # Your prompt here (customize as needed)
-    echo -n "\[\e[32m\]\u@\h\[\e[0m\]:\[\e[34m\]\w\[\e[0m\]\$ "
-    __ac_osc133_b
-}
-
-# Set PS1 using PROMPT_COMMAND to ensure markers are sent
-PS1='$(__ac_prompt)'
-
-echo "Awesome Claude shell integration loaded"
+# PS1 with OSC 133 markers embedded
+# \[ and \] are non-printing character wrappers for PS1
+# OSC 133;A = prompt start, OSC 133;B = command start
+PS1='\[\e]133;A\e\\\]\[\e[32m\]\u@\h\[\e[0m\]:\[\e[34m\]\w\[\e[0m\]\$ \[\e]133;B\e\\\]'

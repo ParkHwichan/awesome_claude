@@ -2,15 +2,13 @@ import { useCallback } from 'react';
 import { useAppStore } from '@/store/app-store';
 import { useProjectStore } from '@/store/project-store';
 import { useEditorStore } from '@/store/editor-store';
-import { useTerminalStore } from '@/store/terminal-store';
-import { useSessionStore } from '@/store/session-store';
 import { useSidebarResize } from '@/hooks/useSidebarResize';
 import { FileExplorer } from '@/components/FileExplorer';
 import { SearchPanel, GitPanel } from '@/components/Editor';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { TerminalIcon, AlertTriangleIcon } from 'lucide-react';
+import { AlertTriangleIcon, GripVerticalIcon, TicketIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getAnimalEmoji, findTicketById, hasUnresolvedBlockers } from '@/lib/ticket-utils';
+import { hasUnresolvedBlockers, getTypeIcon, getPriorityColor } from '@/lib/ticket-utils';
 import type { Ticket } from '@awesome-claude/shared';
 
 interface SidebarContentProps {
@@ -21,9 +19,6 @@ export function SidebarContent({ onViewDiff }: SidebarContentProps) {
   const { activeActivity, sidebarOpen, sidebarWidth, setActiveActivity } = useAppStore();
   const { tickets, selectedProjectId, selectedTicketId, setSelectedTicketId } = useProjectStore();
   const { openFile } = useEditorStore();
-  const terminalTabs = useTerminalStore((state) => state.tabs);
-  const selectTerminal = useTerminalStore((state) => state.selectTerminal);
-  const sessions = useSessionStore((state) => state.sessions);
   const { isResizing, handleResizeStart } = useSidebarResize();
 
   const selectedProject = useProjectStore((state) =>
@@ -37,30 +32,24 @@ export function SidebarContent({ onViewDiff }: SidebarContentProps) {
     return hasUnresolvedBlockers(t, tickets);
   }, [tickets]);
 
-  // Get session for a terminal by matching MCP process PID
-  const getSessionForTerminal = useCallback((terminal: { childProcesses?: { pid: number }[] }) => {
-    if (!terminal.childProcesses?.length) return null;
-    for (const proc of terminal.childProcesses) {
-      const sessionId = `mcp-${proc.pid}`;
-      const session = sessions.find((s) => s.id === sessionId);
-      if (session) return session;
-    }
-    return null;
-  }, [sessions]);
+  // Get available (pending, unblocked) tickets for drag-to-terminal
+  const availableTickets = projectTickets.filter((ticket) => {
+    if (ticket.status !== 'pending') return false;
+    return !checkHasUnresolvedBlockers(ticket);
+  });
+
+  // HTML5 Drag start handler
+  const handleDragStart = useCallback((e: React.DragEvent, ticket: Ticket) => {
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('text/plain', ticket.title);
+    e.dataTransfer.setData('application/x-ticket-id', ticket.id);
+    e.dataTransfer.setData('application/x-ticket-title', ticket.title);
+  }, []);
 
   const handleFileOpen = useCallback((path: string) => {
     openFile(path);
     setActiveActivity('files');
   }, [openFile, setActiveActivity]);
-
-  const handleTerminalClick = useCallback((terminal: typeof terminalTabs[0]) => {
-    const session = getSessionForTerminal(terminal);
-    if (session) {
-      selectTerminal(session.id);
-    } else {
-      selectTerminal(terminal.sessionId);
-    }
-  }, [getSessionForTerminal, selectTerminal]);
 
   return (
     <div
@@ -143,47 +132,60 @@ export function SidebarContent({ onViewDiff }: SidebarContentProps) {
               </div>
             )}
 
-            {/* Terminal Activity */}
+            {/* Terminal Activity - Available tickets to drag */}
             {activeActivity === 'terminal' && (
               <div className="py-2">
-                <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Terminals
+                <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                  <TicketIcon className="w-3 h-3" />
+                  <span>Available Tasks</span>
+                  <span className="text-muted-foreground/50 ml-auto">{availableTickets.length}</span>
                 </div>
-                <div className="px-2 mt-1">
-                  {terminalTabs.length === 0 ? (
+                <div className="px-2 mt-1 space-y-0.5">
+                  {availableTickets.length === 0 ? (
                     <div className="px-2 py-4 text-[13px] text-muted-foreground/50 text-center">
-                      No active terminals
+                      No available tasks
                     </div>
                   ) : (
-                    terminalTabs.map((terminal) => {
-                      const session = getSessionForTerminal(terminal);
+                    availableTickets.map((ticket) => {
+                      const TypeIcon = getTypeIcon(ticket.type);
+                      const isSelected = selectedTicketId === ticket.id;
                       return (
-                        <button
-                          key={terminal.sessionId}
-                          onClick={() => handleTerminalClick(terminal)}
-                          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] hover:bg-sidebar-accent cursor-pointer text-left"
+                        <div
+                          key={ticket.id}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, ticket)}
+                          onClick={() => setSelectedTicketId(ticket.id)}
+                          className={cn(
+                            'group flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-grab text-[13px]',
+                            'hover:bg-sidebar-accent active:cursor-grabbing',
+                            isSelected && 'bg-sidebar-accent ring-1 ring-primary/50'
+                          )}
+                          title="Click for detail, drag to terminal"
                         >
-                          {getAnimalEmoji(terminal.title) ? (
-                            <span className="text-sm shrink-0">{getAnimalEmoji(terminal.title)}</span>
-                          ) : terminal.color ? (
-                            <span
-                              className="w-3 h-3 rounded-full shrink-0"
-                              style={{ backgroundColor: terminal.color }}
-                            />
-                          ) : (
-                            <TerminalIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                          )}
-                          <span className="truncate flex-1 text-muted-foreground">
-                            {terminal.title}
+                          <GripVerticalIcon className="w-3 h-3 text-muted-foreground/40 group-hover:text-muted-foreground shrink-0" />
+                          <span
+                            className={cn(
+                              'w-1.5 h-1.5 rounded-full shrink-0',
+                              getPriorityColor(ticket.priority)
+                            )}
+                          />
+                          <TypeIcon className="w-3 h-3 text-muted-foreground shrink-0" />
+                          <span className={cn(
+                            'truncate flex-1',
+                            isSelected ? 'text-foreground' : 'text-muted-foreground'
+                          )}>
+                            {ticket.title}
                           </span>
-                          {session?.status === 'active' && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse shrink-0" />
-                          )}
-                        </button>
+                        </div>
                       );
                     })
                   )}
                 </div>
+                {availableTickets.length > 0 && (
+                  <p className="px-3 mt-2 text-[11px] text-muted-foreground/50">
+                    Drag to terminal
+                  </p>
+                )}
               </div>
             )}
           </>

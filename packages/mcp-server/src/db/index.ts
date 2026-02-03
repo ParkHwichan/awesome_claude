@@ -50,7 +50,7 @@ export function closeDatabase(): void {
   }
 }
 
-const CURRENT_VERSION = 13;
+const CURRENT_VERSION = 14;
 
 function runMigrations(libsqlClient: Client, dbPath: string): void {
   // Use a version file since libsql client is async-only
@@ -400,6 +400,23 @@ function runMigrations(libsqlClient: Client, dbPath: string): void {
       console.error('Migration 13 error:', e);
     }
     version = 13;
+  }
+
+  // Migration to remove sessions table (sessions now managed by Tauri)
+  if (version < 14) {
+    console.error('Running migration to version 14: Removing sessions table (managed by Tauri)');
+    try {
+      libsqlClient.executeMultiple(`
+        DROP TABLE IF EXISTS sessions;
+        DROP INDEX IF EXISTS idx_sessions_project_id;
+        DROP INDEX IF EXISTS idx_sessions_status;
+        DROP INDEX IF EXISTS idx_sessions_last_heartbeat;
+        DROP INDEX IF EXISTS idx_sessions_ppid;
+      `);
+    } catch (e) {
+      console.error('Migration 14 error:', e);
+    }
+    version = 14;
   }
 
   writeFileSync(versionFile, String(CURRENT_VERSION));

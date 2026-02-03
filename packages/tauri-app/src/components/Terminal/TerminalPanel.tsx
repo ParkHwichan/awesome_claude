@@ -147,6 +147,9 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
   // WebGL toggle state
   const [webglEnabled, setWebglEnabled] = useState(true);
 
+  // Ticket drop target (for HTML5 drag from sidebar)
+  const [ticketDropTarget, setTicketDropTarget] = useState<string | null>(null);
+
   // Sync terminals to store
   useEffect(() => {
     const tabs = Array.from(terminals.values()).map((terminal) => ({
@@ -807,6 +810,43 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     setDropTarget(null);
   }, [draggedTab, panelGroups, layout]);
 
+  // HTML5 Drag handlers for ticket drop
+  const handleTicketDragOver = useCallback((e: React.DragEvent, groupId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    setTicketDropTarget(groupId);
+  }, []);
+
+  const handleTicketDragLeave = useCallback(() => {
+    setTicketDropTarget(null);
+  }, []);
+
+  const handleTicketDrop = useCallback(async (e: React.DragEvent, groupId: string) => {
+    e.preventDefault();
+    setTicketDropTarget(null);
+
+    const ticketTitle = e.dataTransfer.getData('application/x-ticket-title') || e.dataTransfer.getData('text/plain');
+    if (!ticketTitle) return;
+
+    // Find the active terminal in this group
+    const group = panelGroups.get(groupId);
+    if (!group?.activeTabId) return;
+
+    const tab = group.tabs.find((t) => t.id === group.activeTabId);
+    if (!tab) return;
+
+    const terminal = terminals.get(tab.terminalId);
+    if (!terminal || terminal.sessionId.startsWith('pending-')) return;
+
+    // Write the command to the terminal
+    const command = `${ticketTitle} 진행해`;
+    try {
+      await invoke('terminal_write', { sessionId: terminal.sessionId, data: command });
+    } catch (err) {
+      console.error('Failed to write to terminal:', err);
+    }
+  }, [panelGroups, terminals]);
+
   // Check if MCP server is running in a terminal
   const isMcpRunning = useCallback((terminal: TerminalInstance | undefined): boolean => {
     if (!terminal?.childProcesses?.length) return false;
@@ -1054,7 +1094,23 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
         </div>
 
         {/* Terminal content - render all tabs but hide inactive ones */}
-        <div className="flex-1 min-h-0 relative">
+        <div
+          className={cn(
+            'flex-1 min-h-0 relative transition-all',
+            ticketDropTarget === groupId && 'ring-2 ring-primary ring-inset bg-primary/5'
+          )}
+          onDragOver={(e) => handleTicketDragOver(e, groupId)}
+          onDragLeave={handleTicketDragLeave}
+          onDrop={(e) => handleTicketDrop(e, groupId)}
+        >
+          {/* Drop indicator overlay */}
+          {ticketDropTarget === groupId && (
+            <div className="absolute inset-0 flex items-center justify-center bg-primary/10 z-50 pointer-events-none">
+              <div className="bg-card border border-primary rounded-lg px-4 py-2 shadow-lg">
+                <span className="text-sm font-medium text-primary">Drop to send command</span>
+              </div>
+            </div>
+          )}
           {group.tabs.map((tab) => {
             const terminal = terminals.get(tab.terminalId);
             if (!terminal) return null;
@@ -1094,6 +1150,7 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     workingDir,
     draggedTab,
     dropTarget,
+    ticketDropTarget,
     setActiveTab,
     closeTab,
     addTabToGroup,
@@ -1107,6 +1164,9 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     handleDragOver,
     handleDragLeave,
     handleDrop,
+    handleTicketDragOver,
+    handleTicketDragLeave,
+    handleTicketDrop,
     isMcpRunning,
     isClaudeRunning,
     getProcessLabels,

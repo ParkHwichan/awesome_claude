@@ -1,9 +1,9 @@
-import type { Project, Session } from '@awesome-claude/shared';
+import type { Project } from '@awesome-claude/shared';
 import { broadcaster } from './websocket/broadcaster.js';
 
 // Global state for current project and session
 let currentProject: Project | null = null;
-let currentSession: Session | null = null;
+let currentSessionId: string | null = null;
 
 export function setCurrentProject(project: Project | null): void {
   currentProject = project;
@@ -17,12 +17,8 @@ export function getCurrentProjectId(): string | null {
   return currentProject?.id ?? null;
 }
 
-export function setCurrentSession(session: Session | null): void {
-  currentSession = session;
-}
-
-export function getCurrentSession(): Session | null {
-  return currentSession;
+export function setCurrentSessionId(sessionId: string | null): void {
+  currentSessionId = sessionId;
 }
 
 /**
@@ -30,7 +26,7 @@ export function getCurrentSession(): Session | null {
  *
  * Priority order:
  * 1. Tauri-assigned terminal session ID (from WebSocket session:assigned)
- * 2. MCP-registered session ID (mcp-{pid})
+ * 2. MCP-local session ID (mcp-{pid})
  *
  * This ensures tickets are claimed with the correct session ID that
  * matches what Tauri UI displays, enabling proper session tracking.
@@ -43,13 +39,5 @@ export function getCurrentSessionId(): string | null {
   }
 
   // Fall back to MCP session ID
-  return currentSession?.id ?? null;
-}
-
-/**
- * Get the MCP-local session ID (always mcp-{pid}, ignores Tauri assignment).
- * Use this only for internal MCP operations, not for ticket claiming.
- */
-export function getMcpSessionId(): string | null {
-  return currentSession?.id ?? null;
+  return currentSessionId;
 }

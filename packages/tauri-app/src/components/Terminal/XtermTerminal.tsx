@@ -4,7 +4,7 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+// import { Unicode11Addon } from '@xterm/addon-unicode11'; // Disabled - causes cursor sync issues
 import '@xterm/xterm/css/xterm.css';
 import './xterm-fixes.css';
 import { useTerminalBlocks } from '@/hooks/useTerminalBlocks';
@@ -253,10 +253,11 @@ export function XtermTerminal({
     // Open terminal in container
     terminal.open(containerRef.current);
 
-    // Load Unicode11 addon for proper CJK character width handling
-    const unicode11Addon = new Unicode11Addon();
-    terminal.loadAddon(unicode11Addon);
-    terminal.unicode.activeVersion = '11';
+    // Unicode11 addon disabled - can cause cursor sync issues with some apps
+    // Enable only if CJK character width is broken
+    // const unicode11Addon = new Unicode11Addon();
+    // terminal.loadAddon(unicode11Addon);
+    // terminal.unicode.activeVersion = '11';
 
     // Load WebGL addon for GPU-accelerated rendering (if enabled)
     // Keep ref for context loss recovery
@@ -406,7 +407,6 @@ export function XtermTerminal({
     return () => {
       scrollDisposable.dispose();
       container.removeEventListener('mousedown', handleMouseDown);
-      unicode11Addon.dispose();
       webglAddon?.dispose();
       terminal.dispose();
       terminalRef.current = null;
@@ -425,7 +425,6 @@ export function XtermTerminal({
     let unlistenExit: UnlistenFn | null = null;
     let unlistenChildren: UnlistenFn | null = null;
     let mounted = true;
-    let dataRafId: number | null = null;
 
     const init = async () => {
       const isPending = sessionId.startsWith('pending-');
@@ -462,35 +461,13 @@ export function XtermTerminal({
       }
 
       // Set up data listener (receives base64 encoded bytes)
-      // Batch writes using rAF to prevent cursor jumping
-      let pendingData: Uint8Array[] = [];
-
-      const flushData = () => {
-        dataRafId = null;
-        if (pendingData.length > 0 && terminal) {
-          // Combine all pending chunks
-          const totalLength = pendingData.reduce((sum, arr) => sum + arr.length, 0);
-          const combined = new Uint8Array(totalLength);
-          let offset = 0;
-          for (const chunk of pendingData) {
-            combined.set(chunk, offset);
-            offset += chunk.length;
-          }
-          pendingData = [];
-          terminal.write(combined);
-        }
-      };
-
+      // Write immediately without batching - batching can split escape sequences
       unlistenData = await listen<string>(
         `terminal:data:${actualSessionId}`,
         (event) => {
           if (mounted && terminal) {
             const bytes = decodeBase64(event.payload);
-            pendingData.push(bytes);
-            // Schedule flush on next animation frame
-            if (dataRafId === null) {
-              dataRafId = requestAnimationFrame(flushData);
-            }
+            terminal.write(bytes);
           }
         }
       );
@@ -561,9 +538,6 @@ export function XtermTerminal({
 
     return () => {
       mounted = false;
-      if (dataRafId !== null) {
-        cancelAnimationFrame(dataRafId);
-      }
       onData.dispose();
       unlistenData?.();
       unlistenExit?.();

@@ -13,12 +13,11 @@ import {
 } from './tools/index.js';
 import { initDatabase, closeDatabase } from './db/index.js';
 import { getProjectByWorkingDirectory, createProject } from './store/project-store.js';
-import { registerSession, disconnectSession, getSession } from './store/session-store.js';
 import { broadcaster } from './websocket/broadcaster.js';
 import { basename } from 'path';
 import { ensureSkillFile } from './skill/index.js';
-import { setCurrentProject, setCurrentSession, getCurrentSession, getMcpSessionId } from './state.js';
-import type { ProjectCreatedEvent, SessionDisconnectedEvent } from '@awesome-claude/shared';
+import { setCurrentProject, setCurrentSessionId, getCurrentSessionId } from './state.js';
+import type { ProjectCreatedEvent } from '@awesome-claude/shared';
 
 const SERVER_NAME = 'awesome-claude-mcp';
 const SERVER_VERSION = '0.1.0';
@@ -51,30 +50,14 @@ async function autoRegister(): Promise<void> {
     broadcaster.broadcast(projectEvent);
   }
 
-  // Session will be registered by Tauri via WebSocket (terminal-based session slot)
-  // MCP only needs to track the session ID locally after assignment
-  // For now, set a placeholder session that will be updated when Tauri assigns the slot
+  // Session ID will be assigned by Tauri via WebSocket after connecting
+  // For now, set a placeholder that will be updated when Tauri assigns the slot
   const sessionId = `mcp-${process.pid}`;
+  setCurrentSessionId(sessionId);
 
-  // Check if this is an orchestrator session
-  const isOrchestrator = process.env.AWESOME_CLAUDE_ROLE === 'orchestrator';
-  const sessionName = isOrchestrator ? 'Orchestrator' : undefined;
-
-  // Register in local DB for ticket operations
-  const session = await registerSession({
-    sessionId,
-    projectId: project.id,
-    workingDirectory,
-    name: sessionName,
-  });
-  setCurrentSession(session);
-
-  if (isOrchestrator) {
+  if (process.env.AWESOME_CLAUDE_ROLE === 'orchestrator') {
     console.error('[awesome-claude] Running as Orchestrator session');
   }
-
-  // Note: session:registered event is now emitted by Tauri WebSocket
-  // after matching MCP to its parent terminal
 
   // Ensure skill file exists and is up-to-date (for Claude Code auto-discovery)
   const skillResult = ensureSkillFile(workingDirectory);
@@ -96,33 +79,11 @@ async function main(): Promise<void> {
   broadcaster.connect();
 
   // Register callback for when Tauri assigns a terminal session ID
-  // This ensures DB and state stay in sync with Tauri's session management
-  broadcaster.setOnSessionAssigned(async (assignedSessionId, terminalId) => {
-    const mcpSessionId = getMcpSessionId();
-    const currentSession = getCurrentSession();
-
-    if (!currentSession) return;
-
-    console.error(`[MCP] Syncing session: MCP=${mcpSessionId} → Tauri=${assignedSessionId}`);
-
-    // Check if a session with the assigned ID already exists in DB
-    const existingSession = await getSession(assignedSessionId);
-
-    if (existingSession) {
-      // Use the existing Tauri session, update our local state to reference it
-      setCurrentSession(existingSession);
-      console.error(`[MCP] Using existing Tauri session: ${assignedSessionId} (${existingSession.name})`);
-    } else {
-      // Register new session with the Tauri-assigned ID
-      const newSession = await registerSession({
-        sessionId: assignedSessionId,
-        projectId: currentSession.projectId,
-        name: currentSession.name,
-        workingDirectory: process.cwd(),
-      });
-      setCurrentSession(newSession);
-      console.error(`[MCP] Registered Tauri session: ${assignedSessionId} (${newSession.name})`);
-    }
+  // Update local state to use Tauri's session ID
+  broadcaster.setOnSessionAssigned((assignedSessionId, terminalId) => {
+    const currentSessionId = getCurrentSessionId();
+    console.error(`[MCP] Session assigned: ${currentSessionId} → ${assignedSessionId}`);
+    setCurrentSessionId(assignedSessionId);
   });
 
   // Auto-register project (broadcasts will be queued)
@@ -148,19 +109,7 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
 
   // Handle graceful shutdown
-  const shutdown = async () => {
-    // Disconnect session
-    const session = getCurrentSession();
-    if (session) {
-      await disconnectSession(session.id);
-      const disconnectEvent: SessionDisconnectedEvent = {
-        type: 'session:disconnected',
-        timestamp: new Date().toISOString(),
-        payload: { id: session.id, projectId: session.projectId },
-      };
-      broadcaster.broadcastToProject(session.projectId || 'global', disconnectEvent);
-    }
-
+  const shutdown = () => {
     broadcaster.disconnect();
     closeDatabase();
     process.exit(0);

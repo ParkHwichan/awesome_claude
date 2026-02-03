@@ -1,17 +1,5 @@
 import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
 
-// Sessions table
-export const sessions = sqliteTable('sessions', {
-  id: text('id').primaryKey(),
-  projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
-  name: text('name').notNull(),
-  status: text('status').notNull().default('active'),
-  currentTicketId: text('current_ticket_id'),
-  lastHeartbeat: text('last_heartbeat').notNull(),
-  createdAt: text('created_at').notNull(),
-  metadata: text('metadata'), // JSON string
-});
-
 // Projects table
 export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
@@ -112,9 +100,6 @@ export const ticketEvents = sqliteTable('ticket_events', {
 });
 
 // Type exports for use in application
-export type Session = typeof sessions.$inferSelect;
-export type NewSession = typeof sessions.$inferInsert;
-
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
 
