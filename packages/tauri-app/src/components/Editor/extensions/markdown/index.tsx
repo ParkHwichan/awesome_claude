@@ -12,7 +12,7 @@ export const markdownExtension: EditorExtension = {
   viewMode: 'toggle',
 
   getActions: (context: ExtensionContext): ExtensionAction[] => {
-    const viewMode = (context.state.viewMode as MarkdownViewMode) || 'edit';
+    const viewMode = (context.state.viewMode as MarkdownViewMode) || 'split';
 
     return [
       {
@@ -43,7 +43,7 @@ export const markdownExtension: EditorExtension = {
   },
 
   getView: (context: ExtensionContext) => {
-    const viewMode = (context.state.viewMode as MarkdownViewMode) || 'edit';
+    const viewMode = (context.state.viewMode as MarkdownViewMode) || 'split';
 
     if (viewMode === 'preview') {
       return <MarkdownPreview content={context.content} />;

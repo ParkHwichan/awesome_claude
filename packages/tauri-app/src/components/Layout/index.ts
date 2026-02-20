@@ -4,3 +4,4 @@ export { ProjectSelector } from './ProjectSelector';
 export { ActivityBar } from './ActivityBar';
 export { SidebarContent } from './SidebarContent';
 export { MainContent } from './MainContent';
+export { WorkbenchTabs } from './WorkbenchTabs';

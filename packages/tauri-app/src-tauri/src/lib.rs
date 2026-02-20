@@ -112,6 +112,7 @@ pub fn run() {
             commands::delete_path,
             commands::rename_path,
             commands::search_in_files,
+            commands::search_files_by_name,
             commands::replace_in_file,
             commands::git_status,
             commands::git_diff,

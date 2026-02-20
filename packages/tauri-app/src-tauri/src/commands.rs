@@ -475,6 +475,128 @@ pub async fn rename_path(old_path: String, new_path: String) -> Result<(), Strin
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FileSearchResult {
+    pub path: String,
+    pub name: String,
+    pub relative_path: String,
+}
+
+/// Search for files by name (for Quick Open)
+#[tauri::command]
+pub async fn search_files_by_name(
+    directory: String,
+    query: String,
+    max_results: Option<usize>,
+) -> Result<Vec<FileSearchResult>, String> {
+    let dir_path = Path::new(&directory);
+    if !dir_path.exists() || !dir_path.is_dir() {
+        return Err(format!("Invalid directory: {}", directory));
+    }
+
+    let max_results = max_results.unwrap_or(50);
+    let query_lower = query.to_lowercase();
+    let mut results = Vec::new();
+
+    fn should_skip_dir(name: &str) -> bool {
+        matches!(
+            name,
+            "node_modules" | ".git" | "target" | "dist" | "build" | ".next" | "__pycache__" | ".venv" | "vendor" | ".idea" | ".vscode"
+        )
+    }
+
+    fn walk_and_search(
+        dir: &Path,
+        base_dir: &Path,
+        query: &str,
+        results: &mut Vec<FileSearchResult>,
+        max_results: usize,
+    ) -> std::io::Result<()> {
+        if results.len() >= max_results {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(dir)? {
+            if results.len() >= max_results {
+                break;
+            }
+
+            let entry = entry?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            // Skip hidden files/dirs (except common ones)
+            if name.starts_with('.') && !matches!(name.as_str(), ".env" | ".gitignore" | ".dockerignore") {
+                continue;
+            }
+
+            if path.is_dir() {
+                if !should_skip_dir(&name) {
+                    walk_and_search(&path, base_dir, query, results, max_results)?;
+                }
+            } else if path.is_file() {
+                let name_lower = name.to_lowercase();
+
+                // Fuzzy match: check if all query chars appear in order
+                if fuzzy_match(&name_lower, query) {
+                    let relative_path = path.strip_prefix(base_dir)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| path.to_string_lossy().to_string());
+
+                    results.push(FileSearchResult {
+                        path: path.to_string_lossy().to_string(),
+                        name,
+                        relative_path,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn fuzzy_match(text: &str, pattern: &str) -> bool {
+        if pattern.is_empty() {
+            return true;
+        }
+
+        let mut pattern_chars = pattern.chars().peekable();
+        for c in text.chars() {
+            if let Some(&pc) = pattern_chars.peek() {
+                if c == pc {
+                    pattern_chars.next();
+                }
+            }
+        }
+        pattern_chars.peek().is_none()
+    }
+
+    walk_and_search(dir_path, dir_path, &query_lower, &mut results, max_results)
+        .map_err(|e| format!("Search failed: {}", e))?;
+
+    // Sort by relevance: exact filename match first, then by path length
+    results.sort_by(|a, b| {
+        let a_exact = a.name.to_lowercase() == query_lower;
+        let b_exact = b.name.to_lowercase() == query_lower;
+
+        if a_exact != b_exact {
+            return b_exact.cmp(&a_exact);
+        }
+
+        let a_starts = a.name.to_lowercase().starts_with(&query_lower);
+        let b_starts = b.name.to_lowercase().starts_with(&query_lower);
+
+        if a_starts != b_starts {
+            return b_starts.cmp(&a_starts);
+        }
+
+        a.relative_path.len().cmp(&b.relative_path.len())
+    });
+
+    Ok(results)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchMatch {
     pub file_path: String,
     pub line_number: u32,

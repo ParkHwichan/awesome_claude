@@ -1,8 +1,8 @@
 import { useCallback } from 'react';
 import { Header, ProjectSelector, ActivityBar, SidebarContent, MainContent } from './components/Layout';
-import { TicketDetail } from './components/TicketDetail';
 import { SessionsBar } from './components/SessionsBar';
 import { OrchestratorPanel } from './components/OrchestratorPanel';
+import { CommandPalette } from './components/CommandPalette';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useAppStore } from './store/app-store';
 import { useProjectStore } from './store/project-store';
@@ -11,7 +11,6 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useAppEvents } from './hooks/useAppEvents';
 import { useDiffViewer } from './hooks/useDiffViewer';
 import { useSidebarResize } from './hooks/useSidebarResize';
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { FolderIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -36,7 +35,6 @@ function App() {
 
   // Derived state
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
-  const selectedTicket = tickets.find((t) => t.id === selectedTicketId);
 
   // Diff viewer
   const { activeDiff, handleViewDiff, closeDiff } = useDiffViewer(selectedProject?.workingDirectory);
@@ -91,33 +89,6 @@ function App() {
       {/* Sessions Bar */}
       <SessionsBar onSessionClick={focusSessionTerminal} />
 
-      {/* Ticket Detail Dialog */}
-      <Dialog
-        open={!!selectedTicket}
-        onOpenChange={(open) => !open && setSelectedTicketId(null)}
-      >
-        <DialogContent
-          className="max-w-2xl max-h-[85vh] overflow-hidden p-0 flex flex-col"
-          showCloseButton={false}
-          aria-describedby={undefined}
-        >
-          <DialogTitle className="sr-only">Ticket Details</DialogTitle>
-          {selectedTicket && (
-            <ErrorBoundary onReset={() => setSelectedTicketId(null)}>
-              <TicketDetail
-                ticket={selectedTicket}
-                tickets={tickets}
-                onDelete={(ticketId) => {
-                  handleTicketDeleted(ticketId);
-                  setSelectedTicketId(null);
-                }}
-                onSelectTicket={setSelectedTicketId}
-              />
-            </ErrorBoundary>
-          )}
-        </DialogContent>
-      </Dialog>
-
       {/* Orchestrator Panel */}
       {showOrchestrator && selectedProject && (
         <OrchestratorPanel
@@ -126,6 +97,9 @@ function App() {
           onClose={() => setShowOrchestrator(false)}
         />
       )}
+
+      {/* Command Palette */}
+      <CommandPalette />
     </div>
   );
 }

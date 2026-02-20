@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
+import { services } from '../services';
 import type {
   Project,
   ProjectSummary,
@@ -83,25 +83,27 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   // Data loading
   loadInitialData: async () => {
     set({ isLoading: true, error: null });
-    try {
-      const data = await invoke<{
-        projects: ProjectSummary[];
-        tickets: Ticket[];
-      }>('get_initial_data');
+    const result = await services.project.getInitialData();
 
+    if (result.success) {
       // Restore last selected project from localStorage
       const savedProjectId = localStorage.getItem('selectedProjectId');
-      const projectExists = savedProjectId && data.projects.some((p) => p.id === savedProjectId);
+      const projectExists =
+        !!savedProjectId && result.data.projects.some((p) => p.id === savedProjectId);
+      if (savedProjectId && !projectExists) {
+        // Avoid repeatedly restoring a project that no longer exists.
+        localStorage.removeItem('selectedProjectId');
+      }
 
       set({
-        projects: data.projects,
-        tickets: data.tickets,
+        projects: result.data.projects,
+        tickets: result.data.tickets,
         selectedProjectId: projectExists ? savedProjectId : null,
         isLoading: false,
       });
-    } catch (err) {
-      set({ error: String(err), isLoading: false });
-      console.error('Failed to load initial data:', err);
+    } else {
+      set({ error: result.error.message, isLoading: false });
+      console.error('Failed to load initial data:', result.error.message);
     }
   },
 
@@ -182,28 +184,27 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   // Project actions
   deleteProject: async (id) => {
-    try {
-      await invoke('delete_project', { id });
+    const result = await services.project.deleteProject(id);
+    if (result.success) {
       const { projects, selectedProjectId } = get();
       set({
         projects: projects.filter((p) => p.id !== id),
         selectedProjectId: selectedProjectId === id ? null : selectedProjectId,
         tickets: selectedProjectId === id ? [] : get().tickets,
       });
-    } catch (err) {
-      console.error('Failed to delete project:', err);
-      throw err;
+    } else {
+      console.error('Failed to delete project:', result.error.message);
+      throw new Error(result.error.message);
     }
   },
 
   createProject: async (workingDirectory) => {
-    try {
-      // Extract folder name as project name
-      const name = workingDirectory.split(/[/\\]/).filter(Boolean).pop() || 'New Project';
-      const project = await invoke<Project>('create_project', {
-        name,
-        workingDirectory,
-      });
+    // Extract folder name as project name
+    const name = workingDirectory.split(/[/\\]/).filter(Boolean).pop() || 'New Project';
+    const result = await services.project.createProject(name, workingDirectory);
+
+    if (result.success) {
+      const project = result.data;
       const { projects } = get();
       // Check if project already exists (upsert case)
       if (!projects.some((p) => p.id === project.id)) {
@@ -219,44 +220,46 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         };
         set({ projects: [...projects, summary] });
       }
-      set({ selectedProjectId: project.id });
-    } catch (err) {
-      console.error('Failed to create project:', err);
-      throw err;
+      // Persist selection so the periodic refresh in loadInitialData does not revert it.
+      get().setSelectedProjectId(project.id);
+    } else {
+      console.error('Failed to create project:', result.error.message);
+      throw new Error(result.error.message);
     }
   },
 
   // Ticket actions
   updateTicket: async (id, updates) => {
-    try {
-      const updatedTicket = await invoke<Ticket>('update_ticket', {
-        id,
-        title: updates.title,
-        description: updates.description || null,
-        status: updates.status,
-        priority: updates.priority,
-      });
+    const result = await services.ticket.updateTicket(id, {
+      title: updates.title,
+      description: updates.description || null,
+      status: updates.status,
+      priority: updates.priority,
+    });
+
+    if (result.success) {
       const { tickets } = get();
       set({
-        tickets: tickets.map((t) => (t.id === id ? updatedTicket : t)),
+        tickets: tickets.map((t) => (t.id === id ? result.data : t)),
       });
-    } catch (err) {
-      console.error('Failed to update ticket:', err);
-      throw err;
+    } else {
+      console.error('Failed to update ticket:', result.error.message);
+      throw new Error(result.error.message);
     }
   },
 
   deleteTicket: async (id) => {
-    try {
-      await invoke('delete_ticket', { id });
+    const result = await services.ticket.deleteTicket(id);
+
+    if (result.success) {
       const { tickets, selectedTicketId } = get();
       set({
         tickets: tickets.filter((t) => t.id !== id),
         selectedTicketId: selectedTicketId === id ? null : selectedTicketId,
       });
-    } catch (err) {
-      console.error('Failed to delete ticket:', err);
-      throw err;
+    } else {
+      console.error('Failed to delete ticket:', result.error.message);
+      throw new Error(result.error.message);
     }
   },
 }));

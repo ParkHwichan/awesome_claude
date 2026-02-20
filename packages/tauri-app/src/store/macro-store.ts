@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
+import { services } from '../services';
 
 export interface Macro {
   id: string;
@@ -70,12 +70,13 @@ export const useMacroStore = create<MacroStore>((set, get) => ({
     if (!workingDir) return;
 
     set({ isLoading: true, error: null });
-    try {
-      const macros = await invoke<Macro[]>('macro_list', { workingDir });
-      set({ macros, isLoading: false });
-    } catch (err) {
-      set({ error: String(err), isLoading: false });
-      console.error('Failed to load macros:', err);
+    const result = await services.macro.list(workingDir);
+
+    if (result.success) {
+      set({ macros: result.data, isLoading: false });
+    } else {
+      set({ error: result.error.message, isLoading: false });
+      console.error('Failed to load macros:', result.error.message);
     }
   },
 
@@ -83,58 +84,46 @@ export const useMacroStore = create<MacroStore>((set, get) => ({
     const { workingDir } = get();
     if (!workingDir) throw new Error('No working directory set');
 
-    const macro = await invoke<Macro>('macro_create', {
-      workingDir,
-      name: input.name,
-      description: input.description,
-      commands: input.commands,
-      icon: input.icon,
-      color: input.color,
-      shortcut: input.shortcut,
-      scope: input.scope,
-    });
+    const result = await services.macro.create(workingDir, input);
 
-    set((state) => ({ macros: [...state.macros, macro] }));
-    return macro;
+    if (result.success) {
+      set((state) => ({ macros: [...state.macros, result.data] }));
+      return result.data;
+    } else {
+      throw new Error(result.error.message);
+    }
   },
 
   updateMacro: async (id, input) => {
     const { workingDir } = get();
     if (!workingDir) return null;
 
-    const macro = await invoke<Macro | null>('macro_update', {
-      workingDir,
-      id,
-      name: input.name,
-      description: input.description,
-      commands: input.commands,
-      icon: input.icon,
-      color: input.color,
-      shortcut: input.shortcut,
-    });
+    const result = await services.macro.update(workingDir, id, input);
 
-    if (macro) {
+    if (result.success && result.data) {
       set((state) => ({
-        macros: state.macros.map((m) => (m.id === id ? macro : m)),
+        macros: state.macros.map((m) => (m.id === id ? result.data! : m)),
       }));
+      return result.data;
     }
 
-    return macro;
+    return null;
   },
 
   deleteMacro: async (id) => {
     const { workingDir } = get();
     if (!workingDir) return false;
 
-    const success = await invoke<boolean>('macro_delete', { workingDir, id });
+    const result = await services.macro.delete(workingDir, id);
 
-    if (success) {
+    if (result.success && result.data) {
       set((state) => ({
         macros: state.macros.filter((m) => m.id !== id),
       }));
+      return true;
     }
 
-    return success;
+    return false;
   },
 
   executeMacro: async (id, terminalSessionId) => {
@@ -144,8 +133,8 @@ export const useMacroStore = create<MacroStore>((set, get) => ({
 
     // Execute commands sequentially with small delay between them
     for (const command of macro.commands) {
-      await invoke('terminal_write', { sessionId: terminalSessionId, data: command });
-      await invoke('terminal_write', { sessionId: terminalSessionId, data: '\r' });
+      await services.terminal.write(terminalSessionId, command);
+      await services.terminal.write(terminalSessionId, '\r');
       // Small delay between commands to let shell process them
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -163,10 +152,9 @@ export const useMacroStore = create<MacroStore>((set, get) => ({
     set({ macros: reordered });
 
     // Persist to backend
-    try {
-      await invoke('macro_reorder', { workingDir, macroIds });
-    } catch (err) {
-      console.error('Failed to persist macro order:', err);
+    const result = await services.macro.reorder(workingDir, macroIds);
+    if (!result.success) {
+      console.error('Failed to persist macro order:', result.error.message);
       // Reload to get correct order
       get().loadMacros();
     }

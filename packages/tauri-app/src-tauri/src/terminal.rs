@@ -2,8 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
-use std::fs;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -15,205 +14,45 @@ use uuid::Uuid;
 static TERMINAL_COUNTER: AtomicUsize = AtomicUsize::new(0);
 const MAX_OUTPUT_BUFFER: usize = 1024 * 1024; // 1MB ring buffer
 
-/// Create a custom bashrc for WSL with shell integration
-#[cfg(target_os = "windows")]
-fn ensure_wsl_bashrc() -> Option<String> {
-    const SHELL_INTEGRATION: &str = include_str!("../../src/assets/shell-integration/awesome-claude.bash");
-
-    // Create custom bashrc content - pure WSL environment
-    let bashrc_content = format!(
-        r#"# Awesome Claude WSL bashrc
-# Source system bashrc first
-if [ -f /etc/bash.bashrc ]; then
-    . /etc/bash.bashrc
-fi
-
-# Source user's bashrc
-if [ -f ~/.bashrc ]; then
-    . ~/.bashrc
-fi
-
-# Ensure Claude paths are in PATH
-export PATH="$HOME/.local/bin:$HOME/.claude/bin:$PATH"
-
-# Convert Windows .claude.json for WSL
-WINDOWS_CLAUDE_JSON="${{WINDOWS_CLAUDE_JSON:-}}"
-if [ -n "$WINDOWS_CLAUDE_JSON" ] && [ -f "$WINDOWS_CLAUDE_JSON" ]; then
-    # Simple sed conversion - fix commands for WSL
-    sed -e 's/"command": "cmd"/"command": "cmd.exe"/g' \
-        -e 's/"command": "node"/"command": "node.exe"/g' \
-        -e 's/"command": "npx"/"command": "npx.cmd"/g' \
-        "$WINDOWS_CLAUDE_JSON" > "$HOME/.claude.json.tmp"
-
-    if ! cmp -s "$HOME/.claude.json.tmp" "$HOME/.claude.json" 2>/dev/null; then
-        mv "$HOME/.claude.json.tmp" "$HOME/.claude.json"
-        echo "Configured .claude.json for WSL"
-    else
-        rm -f "$HOME/.claude.json.tmp"
-    fi
-fi
-
-# Link .claude directory if exists
-WINDOWS_CLAUDE_DIR="${{WINDOWS_CLAUDE_HOME:-}}"
-if [ -n "$WINDOWS_CLAUDE_DIR" ] && [ -d "$WINDOWS_CLAUDE_DIR" ]; then
-    if [ ! -L "$HOME/.claude" ]; then
-        rm -rf "$HOME/.claude"
-        ln -s "$WINDOWS_CLAUDE_DIR" "$HOME/.claude"
-    fi
-fi
-
-# Auto-install Claude Code if not present
-if ! command -v claude &> /dev/null; then
-    echo "Claude Code not found. Installing..."
-    curl -fsSL https://claude.ai/install.sh | bash
-fi
-
-# Shell integration
-{}
-"#,
-        SHELL_INTEGRATION.replace("\r\n", "\n")
-    );
-
-    let windows_path = std::env::temp_dir().join("awesome-claude-wsl.bashrc");
-    if fs::write(&windows_path, &bashrc_content).is_err() {
-        return None;
-    }
-
-    // Convert to WSL path
-    let path_str = windows_path.to_string_lossy();
-    if path_str.len() >= 2 && path_str.chars().nth(1) == Some(':') {
-        let drive = path_str.chars().next().unwrap().to_ascii_lowercase();
-        let rest = path_str[2..].replace('\\', "/");
-        return Some(format!("/mnt/{}{}", drive, rest));
-    }
-
-    None
-}
-
-/// Convert Windows path to WSL path format
-#[cfg(target_os = "windows")]
-fn windows_to_wsl_path(windows_path: &str) -> String {
-    let path_str = windows_path.replace('\\', "/");
-    let path_str = path_str.strip_prefix("//?/").unwrap_or(&path_str);
-
-    if path_str.len() >= 2 && path_str.chars().nth(1) == Some(':') {
-        let drive = path_str.chars().next().unwrap().to_ascii_lowercase();
-        let rest = &path_str[2..];
-        format!("/mnt/{}{}", drive, rest)
-    } else {
-        path_str.to_string()
-    }
-}
-
-/// Get child processes running inside WSL using `ps` command
-/// Tracks the process tree from our shell's descendants
-#[cfg(target_os = "windows")]
-fn get_wsl_child_processes(_shell_pid: u32) -> Vec<ChildProcessInfo> {
-    use std::process::Command;
-    use std::collections::{HashMap, HashSet};
-
-    // Run `ps -eo pid,ppid,comm,args --no-headers` inside WSL
-    let output = match Command::new("wsl")
-        .args(["--", "ps", "-eo", "pid,ppid,comm,args", "--no-headers"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return Vec::new(),
-    };
-
-    if !output.status.success() {
-        return Vec::new();
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Parse all processes into a map: pid -> (ppid, name, cmd)
-    let mut process_map: HashMap<u32, (u32, String, String)> = HashMap::new();
-    let mut children_map: HashMap<u32, Vec<u32>> = HashMap::new();
-
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 3 {
-            continue;
-        }
-
-        let pid: u32 = match parts[0].parse() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-
-        let ppid: u32 = match parts[1].parse() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-
-        let name = parts[2].to_string();
-        let cmd = if parts.len() > 3 { parts[3..].join(" ") } else { name.clone() };
-
-        process_map.insert(pid, (ppid, name, cmd));
-        children_map.entry(ppid).or_default().push(pid);
-    }
-
-    // Find our shell: look for bash processes that are interactive (have our rcfile pattern)
-    // or find the bash that's running our custom bashrc
-    let mut shell_pids: Vec<u32> = Vec::new();
-    for (pid, (_, name, cmd)) in &process_map {
-        if name == "bash" && (cmd.contains("awesome-claude") || cmd.contains("--rcfile")) {
-            shell_pids.push(*pid);
-        }
-    }
-
-    // If no specific shell found, look for any interactive bash that has children
-    if shell_pids.is_empty() {
-        for (pid, (_, name, _)) in &process_map {
-            if name == "bash" && children_map.contains_key(pid) {
-                shell_pids.push(*pid);
-            }
-        }
-    }
-
-    // Collect all descendants of our shell(s)
-    let mut descendants: HashSet<u32> = HashSet::new();
-    let mut to_visit: Vec<u32> = shell_pids.clone();
-
-    while let Some(pid) = to_visit.pop() {
-        if let Some(children) = children_map.get(&pid) {
-            for &child_pid in children {
-                if descendants.insert(child_pid) {
-                    to_visit.push(child_pid);
-                }
-            }
-        }
-    }
-
-    // Build result, filtering out system/shell processes
-    let mut processes: Vec<ChildProcessInfo> = Vec::new();
-    let skip_names: HashSet<&str> = ["bash", "ps", "init", "wsl", "sh", "grep", "awk", "sed"].into_iter().collect();
-
-    for pid in descendants {
-        if let Some((_, name, cmd)) = process_map.get(&pid) {
-            // Skip system and shell processes
-            if skip_names.contains(name.as_str()) {
-                continue;
-            }
-
-            processes.push(ChildProcessInfo {
-                pid,
-                name: name.clone(),
-                cmd: cmd.clone(),
-            });
-        }
-    }
-
-    processes.sort_by_key(|p| p.pid);
-    processes
-}
-
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ChildProcessInfo {
     pub pid: u32,
     pub name: String,
     pub cmd: String,  // Full command line
+}
+
+fn get_descendant_processes(sys: &System, root_pid: u32) -> Vec<ChildProcessInfo> {
+    let mut descendants: Vec<ChildProcessInfo> = Vec::new();
+    let mut pids_to_check: Vec<u32> = vec![root_pid];
+    let mut checked_pids: HashSet<u32> = HashSet::new();
+    checked_pids.insert(root_pid);
+
+    while let Some(parent_pid) = pids_to_check.pop() {
+        for (pid, process) in sys.processes() {
+            let pid_u32 = pid.as_u32();
+            if checked_pids.contains(&pid_u32) {
+                continue;
+            }
+            if let Some(proc_parent) = process.parent() {
+                if proc_parent.as_u32() == parent_pid {
+                    descendants.push(ChildProcessInfo {
+                        pid: pid_u32,
+                        name: process.name().to_string_lossy().to_string(),
+                        cmd: process
+                            .cmd()
+                            .iter()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    });
+                    pids_to_check.push(pid_u32);
+                    checked_pids.insert(pid_u32);
+                }
+            }
+        }
+    }
+
+    descendants
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -372,39 +211,7 @@ impl TerminalManager {
                         continue;
                     }
 
-                    // For WSL sessions, we need to query processes inside WSL
-                    #[cfg(target_os = "windows")]
-                    let mut descendants = get_wsl_child_processes(shell_pid);
-
-                    #[cfg(not(target_os = "windows"))]
-                    let descendants = {
-                        // Find ALL descendant processes (children, grandchildren, etc.)
-                        let mut descendants: Vec<ChildProcessInfo> = Vec::new();
-                        let mut pids_to_check: Vec<u32> = vec![shell_pid];
-                        let mut checked_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
-                        checked_pids.insert(shell_pid);
-
-                        while let Some(parent_pid) = pids_to_check.pop() {
-                            for (pid, process) in sys.processes() {
-                                let pid_u32 = pid.as_u32();
-                                if checked_pids.contains(&pid_u32) {
-                                    continue;
-                                }
-                                if let Some(proc_parent) = process.parent() {
-                                    if proc_parent.as_u32() == parent_pid {
-                                        descendants.push(ChildProcessInfo {
-                                            pid: pid_u32,
-                                            name: process.name().to_string_lossy().to_string(),
-                                            cmd: process.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect::<Vec<_>>().join(" "),
-                                        });
-                                        pids_to_check.push(pid_u32);
-                                        checked_pids.insert(pid_u32);
-                                    }
-                                }
-                            }
-                        }
-                        descendants
-                    };
+                    let mut descendants = get_descendant_processes(&sys, shell_pid);
 
                     // Sort for consistent comparison
                     descendants.sort_by_key(|p| p.pid);
@@ -473,41 +280,22 @@ impl TerminalManager {
         let cmd = {
             #[cfg(target_os = "windows")]
             {
-                // Use WSL bash with custom rcfile that includes Windows PATH
-                let mut c = CommandBuilder::new("wsl.exe");
-
-                let wsl_cwd = windows_to_wsl_path(working_dir);
-
-                // Create custom bashrc with Windows PATH and shell integration
-                let bash_cmd = if let Some(rcfile) = ensure_wsl_bashrc() {
-                    format!(
-                        "cd '{}' && exec bash --rcfile '{}' -i",
-                        wsl_cwd.replace('\'', "'\\''"),
-                        rcfile.replace('\'', "'\\''")
-                    )
-                } else {
-                    format!(
-                        "cd '{}' && exec bash -i",
-                        wsl_cwd.replace('\'', "'\\''")
-                    )
-                };
-
-                c.args(["--", "bash", "-c", &bash_cmd]);
+                let mut c = CommandBuilder::new("powershell.exe");
+                let startup_cmd = format!(
+                    "Set-Location -LiteralPath '{}'",
+                    working_dir.replace('\'', "''")
+                );
+                c.args([
+                    "-NoLogo",
+                    "-NoExit",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    &startup_cmd,
+                ]);
                 c.env("TERM", "xterm-256color");
                 c.env("COLORTERM", "truecolor");
-
-                // Pass Windows Claude config paths to WSL
-                if let Ok(userprofile) = std::env::var("USERPROFILE") {
-                    let wsl_userprofile = windows_to_wsl_path(&userprofile);
-                    let windows_claude_dir = format!("{}/.claude", wsl_userprofile);
-                    let windows_claude_json = format!("{}/.claude.json", wsl_userprofile);
-                    c.env("WINDOWS_CLAUDE_HOME", &windows_claude_dir);
-                    c.env("WINDOWS_CLAUDE_JSON", &windows_claude_json);
-                    c.env("WSLENV", "TERM:COLORTERM:WINDOWS_CLAUDE_HOME:WINDOWS_CLAUDE_JSON");
-                } else {
-                    c.env("WSLENV", "TERM:COLORTERM");
-                }
-
+                c.env("FORCE_COLOR", "1");
                 c
             }
             #[cfg(not(target_os = "windows"))]
@@ -614,31 +402,29 @@ impl TerminalManager {
             return Err("Session is dead".to_string());
         }
 
-        // IMPORTANT: Resize BEFORE setting attached to ensure correct dimensions
-        // before data starts flowing
+        // IMPORTANT: Resize before (re)attaching so the PTY and frontend agree on dimensions.
         session.resize(cols, rows)?;
-        // Reset screen then replay buffered output so cursor state is realigned.
-        if let Some(app_handle) = self.state.app_handle.lock().clone() {
-            let reset = b"\x1b[2J\x1b[H";
-            let _ = app_handle.emit(
-                &format!("terminal:data:{}", session_id),
-                &BASE64.encode(reset),
-            );
-            let backlog = session.snapshot_output_buffer();
-            if !backlog.is_empty() {
-                let mut offset = 0;
-                while offset < backlog.len() {
-                    let end = (offset + 8192).min(backlog.len());
-                    let encoded = BASE64.encode(&backlog[offset..end]);
-                    let _ = app_handle.emit(
-                        &format!("terminal:data:{}", session_id),
-                        &encoded,
-                    );
-                    offset = end;
+
+        // Re-attaching while already attached can corrupt the frontend cursor/screen state if we
+        // inject clears/replays. Treat attach as idempotent: only replay backlog on first attach.
+        let was_attached = session.attached.swap(true, Ordering::SeqCst);
+        if !was_attached {
+            if let Some(app_handle) = self.state.app_handle.lock().clone() {
+                let backlog = session.snapshot_output_buffer();
+                if !backlog.is_empty() {
+                    let mut offset = 0;
+                    while offset < backlog.len() {
+                        let end = (offset + 8192).min(backlog.len());
+                        let encoded = BASE64.encode(&backlog[offset..end]);
+                        let _ = app_handle.emit(
+                            &format!("terminal:data:{}", session_id),
+                            &encoded,
+                        );
+                        offset = end;
+                    }
                 }
             }
         }
-        session.attached.store(true, Ordering::SeqCst);
         Ok(())
     }
 

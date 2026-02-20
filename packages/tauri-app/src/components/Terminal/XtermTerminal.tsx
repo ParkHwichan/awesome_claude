@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+﻿import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { Terminal } from '@xterm/xterm';
@@ -85,7 +85,7 @@ export function XtermTerminal({
   const actualSessionIdRef = useRef<string | null>(null);
   const onExitRef = useRef(onExit);
   const onSessionCreatedRef = useRef(onSessionCreated);
-  const lastAttachRef = useRef<number>(0);
+  // NOTE: Avoid re-attaching on focus/tab switches. It can desync cursor/screen state.
 
   // Block management - pass state so hook updates when terminal is created
   const {
@@ -674,27 +674,8 @@ export function XtermTerminal({
     }
   }, [isInteractive, refitAndResize]);
 
-  // Re-attach on tab activation to force backend replay and cursor realignment.
-  useEffect(() => {
-    if (!isInteractive) return;
-    const terminal = terminalRef.current;
-    const fitAddon = fitAddonRef.current;
-    const sid = actualSessionIdRef.current;
-    if (!terminal || !fitAddon || !sid) return;
-
-    const now = Date.now();
-    if (now - lastAttachRef.current < 150) {
-      return;
-    }
-    lastAttachRef.current = now;
-
-    fitAddon.fit();
-    const cols = terminal.cols;
-    const rows = terminal.rows;
-    prevSizeRef.current = { cols, rows };
-    console.log('[PTY] attach:tab-active', sid.slice(-8), cols, 'x', rows);
-    invoke('terminal_attach', { sessionId: sid, cols, rows }).catch(console.error);
-  }, [isInteractive]);
+  // Intentionally do not re-attach on tab activation. If the cursor/screen looks wrong,
+  // users can trigger a soft/hard reset instead (Ctrl+Shift+R / Ctrl+Shift+Alt+R).
 
   // Refit when window/tab regains focus or visibility.
   useEffect(() => {
@@ -834,10 +815,10 @@ export function XtermTerminal({
           size="sm"
           onClick={scrollToBottom}
           className="absolute bottom-16 right-4 z-10 h-8 gap-1.5 shadow-lg bg-card/90 hover:bg-card border border-border"
-          title="맨 아래로"
+          title="Scroll to bottom"
         >
           <ArrowDownIcon className="w-4 h-4" />
-          <span className="text-xs">맨 아래로</span>
+          <span className="text-xs">Bottom</span>
         </Button>
       )}
       {/* Input area - fixed at bottom */}

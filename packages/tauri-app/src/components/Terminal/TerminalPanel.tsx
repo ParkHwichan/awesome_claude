@@ -1,68 +1,23 @@
-import { useState, useCallback, useMemo, Fragment, useEffect, useRef } from 'react';
-import { useTerminalStore } from '@/store/terminal-store';
-import { Button } from '@/components/ui/button';
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
-import { Input } from '@/components/ui/input';
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuSub,
-  ContextMenuSubContent,
-  ContextMenuSubTrigger,
-  ContextMenuTrigger,
-} from '@/components/ui/context-menu';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
-import { cn } from '@/lib/utils';
-import { getAnimalEmoji } from '@/lib/ticket-utils';
-import {
-  XIcon,
-  PlusIcon,
-  TerminalIcon,
-  ExternalLinkIcon,
-  PencilIcon,
-  PaletteIcon,
-  SplitSquareHorizontalIcon,
-  SplitSquareVerticalIcon,
-  MonitorIcon,
-  ZapIcon,
-} from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { Panel, Group, Separator } from 'react-resizable-panels';
-import { XtermTerminal } from './XtermTerminal';
-import { MacroPanel } from './MacroPanel';
-import { ANIMAL_ICON_INDICES } from './AnimalIcon';
-import {
-  type TerminalInstance,
-  type PanelGroup,
-  type PanelTab,
-  type LayoutNode,
-  type ChildProcessInfo,
-  createPanelGroupNode,
-  splitPanelGroupInLayout,
-  removePanelGroupFromLayout,
-  getPanelGroupIdsInLayout,
-} from './types';
+/**
+ * TerminalPanel Component
+ *
+ * Main terminal panel component that orchestrates terminal layout, tabs, and sessions.
+ * This is a refactored version that delegates to smaller, focused components.
+ */
 
-// Tab color options
-const TAB_COLORS = [
-  { name: 'Default', value: undefined },
-  { name: 'Red', value: '#ef4444' },
-  { name: 'Orange', value: '#f97316' },
-  { name: 'Yellow', value: '#eab308' },
-  { name: 'Green', value: '#22c55e' },
-  { name: 'Blue', value: '#3b82f6' },
-  { name: 'Purple', value: '#a855f7' },
-  { name: 'Pink', value: '#ec4899' },
-] as const;
+import { useState, useCallback, useEffect, Fragment } from 'react';
+import { useTerminalStore } from '@/store/terminal-store';
+import { invoke } from '@tauri-apps/api/core';
+import { Panel, Group, Separator } from 'react-resizable-panels';
+import type { LayoutNode } from './types';
+import { useTerminalLayout } from './hooks/useTerminalLayout';
+import {
+  TerminalToolbar,
+  TerminalPanelGroup,
+  RenameDialog,
+  EmptyState,
+} from './components';
+import { MacroPanel } from './MacroPanel';
 
 interface TerminalPanelProps {
   workingDir: string;
@@ -71,69 +26,34 @@ interface TerminalPanelProps {
   isVisible?: boolean;
 }
 
-let idCounter = 0;
-function generateId(prefix: string): string {
-  return `${prefix}-${Date.now()}-${++idCounter}`;
-}
-
-// Terminal session info from Rust backend (source of truth)
-interface TerminalSessionInfo {
-  sessionId: string;
-  workingDir: string;
-  shellPid: number;
-  isAlive: boolean;
-  childProcesses: Array<{ pid: number; name: string; cmd: string }>;
-  title: string;
-  color: string | null;
-}
-
-// Saved state for localStorage persistence
-interface SavedTerminalState {
-  layout: LayoutNode | null;
-  panelGroups: Array<[string, PanelGroup]>;
-  terminals: Array<[string, { id: string; sessionId: string; shellPid?: number; title: string; color?: string; iconIndex?: number }]>;
-  activeGroupId: string | null;
-}
-
-function getStorageKey(workingDir: string): string {
-  return `terminal-layout:${workingDir}`;
-}
-
-function saveTerminalState(workingDir: string, state: SavedTerminalState): void {
-  try {
-    localStorage.setItem(getStorageKey(workingDir), JSON.stringify(state));
-  } catch (e) {
-    console.error('Failed to save terminal state:', e);
-  }
-}
-
-function loadTerminalState(workingDir: string): SavedTerminalState | null {
-  try {
-    const saved = localStorage.getItem(getStorageKey(workingDir));
-    if (saved) {
-      return JSON.parse(saved);
-    }
-  } catch (e) {
-    console.error('Failed to load terminal state:', e);
-  }
-  return null;
-}
-
-export function TerminalPanel({ workingDir, projectName, onClose, isVisible = true }: TerminalPanelProps) {
-  const setTerminalTabs = useTerminalStore((state) => state.setTabs);
+export function TerminalPanel({
+  workingDir,
+  projectName,
+  onClose,
+  isVisible = true,
+}: TerminalPanelProps) {
   const selectedSessionId = useTerminalStore((state) => state.selectedSessionId);
   const selectTerminal = useTerminalStore((state) => state.selectTerminal);
 
-  // Layout of panel groups
-  const [layout, setLayout] = useState<LayoutNode | null>(null);
-  // Panel groups (each has its own tabs)
-  const [panelGroups, setPanelGroups] = useState<Map<string, PanelGroup>>(new Map());
-  // Terminal instances
-  const [terminals, setTerminals] = useState<Map<string, TerminalInstance>>(new Map());
-  // Active panel group
-  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
-  // Track if we've attempted session restoration
-  const restorationAttemptedRef = useRef(false);
+  // Use the layout hook for all layout state management
+  const {
+    layout,
+    panelGroups,
+    terminals,
+    activeGroupId,
+    setActiveGroupId,
+    initializeLayout,
+    addTabToGroup,
+    splitPanelGroup,
+    closeTab,
+    setActiveTab,
+    updateTabTitle,
+    updateTabColor,
+    moveTab,
+    handleSessionCreated,
+    handleChildProcessesChange,
+    getActiveTerminalSessionId,
+  } = useTerminalLayout({ workingDir });
 
   // Dialog state
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
@@ -150,433 +70,11 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
   // Ticket drop target (for HTML5 drag from sidebar)
   const [ticketDropTarget, setTicketDropTarget] = useState<string | null>(null);
 
-  // Sync terminals to store
-  useEffect(() => {
-    const tabs = Array.from(terminals.values()).map((terminal) => ({
-      sessionId: terminal.sessionId,
-      shellPid: terminal.shellPid,
-      childProcesses: terminal.childProcesses,
-      title: terminal.title,
-      color: terminal.color,
-      iconIndex: terminal.iconIndex,
-    }));
-    setTerminalTabs(tabs);
-  }, [terminals, setTerminalTabs]);
-
-  // Create a new panel group with one terminal
-  const createPanelGroup = useCallback((): { groupId: string; terminalId: string } => {
-    const groupId = generateId('group');
-    const terminalId = generateId('terminal');
-    const tabId = generateId('tab');
-    const tabNumber = terminals.size + 1;
-    const iconIndex = ANIMAL_ICON_INDICES[tabNumber % ANIMAL_ICON_INDICES.length];
-
-    const newTerminal: TerminalInstance = {
-      id: terminalId,
-      sessionId: `pending-${Date.now()}`,
-      title: `Terminal ${tabNumber}`,
-      iconIndex,
-    };
-
-    const newTab: PanelTab = {
-      id: tabId,
-      terminalId,
-      title: `Terminal ${tabNumber}`,
-    };
-
-    const newGroup: PanelGroup = {
-      id: groupId,
-      tabs: [newTab],
-      activeTabId: tabId,
-    };
-
-    setTerminals((prev) => new Map(prev).set(terminalId, newTerminal));
-    setPanelGroups((prev) => new Map(prev).set(groupId, newGroup));
-
-    return { groupId, terminalId };
-  }, [terminals.size]);
-
-  // Initialize with one panel group
-  const initializeLayout = useCallback(() => {
-    const { groupId } = createPanelGroup();
-    setLayout(createPanelGroupNode(groupId));
-    setActiveGroupId(groupId);
-  }, [createPanelGroup]);
-
-  // Restore layout and sessions on mount
-  useEffect(() => {
-    if (restorationAttemptedRef.current) return;
-    restorationAttemptedRef.current = true;
-
-    const restoreState = async () => {
-      try {
-        // Get live sessions from backend
-        const liveSessions = await invoke<TerminalSessionInfo[]>('terminal_list');
-        const normalizedWorkingDir = workingDir.toLowerCase().replace(/\\/g, '/');
-        const matchingSessions = liveSessions.filter(
-          (s) => s.isAlive && s.workingDir.toLowerCase().replace(/\\/g, '/') === normalizedWorkingDir
-        );
-
-        // Create a map of sessionId -> session info for quick lookup
-        const liveSessionMap = new Map(matchingSessions.map((s) => [s.sessionId, s]));
-
-        // Load saved state from localStorage
-        const savedState = loadTerminalState(workingDir);
-
-        // Track which sessions we'll actually use
-        const usedSessionIds = new Set<string>();
-
-        if (savedState && savedState.layout) {
-          console.log(`[TerminalPanel] Restoring saved layout for ${workingDir}`);
-
-          // Restore terminals - match saved sessions with live sessions
-          const newTerminals = new Map<string, TerminalInstance>();
-
-          // First, restore saved terminals that have matching live sessions
-          savedState.terminals.forEach(([terminalId, savedTerminal]) => {
-            const liveSession = liveSessionMap.get(savedTerminal.sessionId);
-            if (liveSession) {
-              // Session is still alive - use title/color from backend (source of truth)
-              usedSessionIds.add(savedTerminal.sessionId);
-              newTerminals.set(terminalId, {
-                id: terminalId,
-                sessionId: savedTerminal.sessionId,
-                shellPid: liveSession.shellPid,
-                childProcesses: liveSession.childProcesses,
-                title: liveSession.title,  // From backend
-                color: liveSession.color ?? undefined,  // From backend
-              });
-            } else {
-              // Session is dead - create new pending session
-              newTerminals.set(terminalId, {
-                id: terminalId,
-                sessionId: `pending-${Date.now()}-${terminalId}`,
-                title: savedTerminal.title,  // Keep old title for dead session
-                color: savedTerminal.color,
-              });
-            }
-          });
-
-          // Restore panel groups with titles from terminals (backend source of truth)
-          const newPanelGroups = new Map<string, PanelGroup>();
-          savedState.panelGroups.forEach(([groupId, group]) => {
-            // Filter tabs to only include terminals that exist and update titles from terminals
-            const validTabs = group.tabs
-              .filter((tab) => newTerminals.has(tab.terminalId))
-              .map((tab) => {
-                const terminal = newTerminals.get(tab.terminalId);
-                return {
-                  ...tab,
-                  title: terminal?.title ?? tab.title,
-                  color: terminal?.color,
-                };
-              });
-            if (validTabs.length > 0) {
-              newPanelGroups.set(groupId, {
-                ...group,
-                tabs: validTabs,
-                activeTabId: validTabs.some((t) => t.id === group.activeTabId)
-                  ? group.activeTabId
-                  : validTabs[0]?.id || null,
-              });
-            }
-          });
-
-          // If we have valid groups, restore the layout
-          if (newPanelGroups.size > 0) {
-            setTerminals(newTerminals);
-            setPanelGroups(newPanelGroups);
-            setLayout(savedState.layout);
-            setActiveGroupId(savedState.activeGroupId || newPanelGroups.keys().next().value || null);
-
-            // Kill orphan sessions (sessions in backend not tracked by our state)
-            const orphanSessions = matchingSessions.filter(s => !usedSessionIds.has(s.sessionId));
-            if (orphanSessions.length > 0) {
-              console.log(`[TerminalPanel] Killing ${orphanSessions.length} orphan sessions`);
-              for (const session of orphanSessions) {
-                try {
-                  await invoke('terminal_kill', { sessionId: session.sessionId });
-                  console.log(`[TerminalPanel] Killed orphan session: ${session.sessionId}`);
-                } catch (err) {
-                  console.error(`[TerminalPanel] Failed to kill orphan session ${session.sessionId}:`, err);
-                }
-              }
-            }
-            return;
-          }
-        }
-
-        // Fallback: No saved state or invalid - use live sessions with backend titles
-        if (matchingSessions.length > 0) {
-          console.log(`[TerminalPanel] Restoring ${matchingSessions.length} live sessions for ${workingDir}`);
-
-          const groupId = generateId('group');
-          const newTerminals = new Map<string, TerminalInstance>();
-          const tabs: PanelTab[] = [];
-
-          matchingSessions.forEach((session) => {
-            const terminalId = generateId('terminal');
-            const tabId = generateId('tab');
-            usedSessionIds.add(session.sessionId);  // Track as used
-
-            newTerminals.set(terminalId, {
-              id: terminalId,
-              sessionId: session.sessionId,
-              shellPid: session.shellPid,
-              childProcesses: session.childProcesses,
-              title: session.title,  // From backend
-              color: session.color ?? undefined,  // From backend
-            });
-
-            tabs.push({
-              id: tabId,
-              terminalId,
-              title: session.title,  // From backend
-              color: session.color ?? undefined,  // From backend
-            });
-          });
-
-          const newGroup: PanelGroup = {
-            id: groupId,
-            tabs,
-            activeTabId: tabs[0]?.id || null,
-          };
-
-          setTerminals(newTerminals);
-          setPanelGroups(new Map([[groupId, newGroup]]));
-          setLayout(createPanelGroupNode(groupId));
-          setActiveGroupId(groupId);
-          // Note: In fallback, we use ALL matching sessions, so no orphans to kill
-        }
-      } catch (err) {
-        console.error('[TerminalPanel] Failed to restore state:', err);
-      }
-    };
-
-    restoreState();
-  }, [workingDir]);
-
-  // Listen for terminal title updates from backend (when MCP session assigns animal name)
-  useEffect(() => {
-    const unlisten = listen<{ type: string; payload: { sessionId: string; title: string } }>(
-      'terminal-event',
-      (event) => {
-        if (event.payload.type === 'terminal:updated') {
-          const { sessionId, title } = event.payload.payload;
-
-          // Update terminal title
-          setTerminals((prev) => {
-            const newMap = new Map(prev);
-            for (const [id, terminal] of newMap) {
-              if (terminal.sessionId === sessionId) {
-                newMap.set(id, { ...terminal, title });
-                break;
-              }
-            }
-            return newMap;
-          });
-
-          // Update tab title
-          setPanelGroups((prev) => {
-            const newMap = new Map(prev);
-            for (const [groupId, group] of newMap) {
-              const updatedTabs = group.tabs.map((tab) => {
-                const terminal = terminals.get(tab.terminalId);
-                if (terminal?.sessionId === sessionId) {
-                  return { ...tab, title };
-                }
-                return tab;
-              });
-              if (updatedTabs !== group.tabs) {
-                newMap.set(groupId, { ...group, tabs: updatedTabs });
-              }
-            }
-            return newMap;
-          });
-        }
-      }
-    );
-
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [terminals]);
-
-  // Save state to localStorage when layout/panelGroups/terminals change
-  useEffect(() => {
-    // Don't save if not initialized yet
-    if (!layout || panelGroups.size === 0) return;
-
-    const state: SavedTerminalState = {
-      layout,
-      panelGroups: Array.from(panelGroups.entries()),
-      terminals: Array.from(terminals.entries()).map(([id, t]) => [
-        id,
-        { id: t.id, sessionId: t.sessionId, shellPid: t.shellPid, title: t.title, color: t.color, iconIndex: t.iconIndex },
-      ]),
-      activeGroupId,
-    };
-
-    saveTerminalState(workingDir, state);
-  }, [layout, panelGroups, terminals, activeGroupId, workingDir]);
-
-  // Add tab to active panel group
-  const addTabToGroup = useCallback((groupId: string) => {
-    const terminalId = generateId('terminal');
-    const tabId = generateId('tab');
-    const tabNumber = terminals.size + 1;
-    const iconIndex = ANIMAL_ICON_INDICES[tabNumber % ANIMAL_ICON_INDICES.length];
-
-    const newTerminal: TerminalInstance = {
-      id: terminalId,
-      sessionId: `pending-${Date.now()}`,
-      title: `Terminal ${tabNumber}`,
-      iconIndex,
-    };
-
-    const newTab: PanelTab = {
-      id: tabId,
-      terminalId,
-      title: `Terminal ${tabNumber}`,
-    };
-
-    setTerminals((prev) => new Map(prev).set(terminalId, newTerminal));
-    setPanelGroups((prev) => {
-      const group = prev.get(groupId);
-      if (!group) return prev;
-      const updated = new Map(prev);
-      updated.set(groupId, {
-        ...group,
-        tabs: [...group.tabs, newTab],
-        activeTabId: tabId,
-      });
-      return updated;
-    });
-  }, [terminals.size]);
-
-  // Split active panel group
-  const splitPanelGroup = useCallback((direction: 'horizontal' | 'vertical') => {
-    if (!activeGroupId || !layout) return;
-
-    const { groupId: newGroupId } = createPanelGroup();
-    const newLayout = splitPanelGroupInLayout(layout, activeGroupId, direction, newGroupId);
-    setLayout(newLayout);
-    setActiveGroupId(newGroupId);
-  }, [activeGroupId, layout, createPanelGroup]);
-
-  // Close tab in a group
-  const closeTab = useCallback(async (groupId: string, tabId: string) => {
-    const group = panelGroups.get(groupId);
-    if (!group) return;
-
-    const tab = group.tabs.find((t) => t.id === tabId);
-    if (!tab) return;
-
-    // Kill terminal
-    const terminal = terminals.get(tab.terminalId);
-    if (terminal && !terminal.sessionId.startsWith('pending-')) {
-      try {
-        await invoke('terminal_kill', { sessionId: terminal.sessionId });
-      } catch (err) {
-        console.error('Failed to kill terminal:', err);
-      }
-    }
-
-    // Remove terminal
-    setTerminals((prev) => {
-      const updated = new Map(prev);
-      updated.delete(tab.terminalId);
-      return updated;
-    });
-
-    // Update group
-    const newTabs = group.tabs.filter((t) => t.id !== tabId);
-    if (newTabs.length === 0) {
-      // Remove entire panel group
-      setPanelGroups((prev) => {
-        const updated = new Map(prev);
-        updated.delete(groupId);
-        return updated;
-      });
-      if (layout) {
-        const newLayout = removePanelGroupFromLayout(layout, groupId);
-        setLayout(newLayout);
-        // Switch to another group if exists
-        if (newLayout) {
-          const remainingGroups = getPanelGroupIdsInLayout(newLayout);
-          setActiveGroupId(remainingGroups[0] || null);
-        } else {
-          setActiveGroupId(null);
-        }
-      }
-    } else {
-      // Just remove the tab
-      const newActiveTabId = group.activeTabId === tabId
-        ? newTabs[Math.min(group.tabs.findIndex((t) => t.id === tabId), newTabs.length - 1)]?.id || null
-        : group.activeTabId;
-
-      setPanelGroups((prev) => {
-        const updated = new Map(prev);
-        updated.set(groupId, {
-          ...group,
-          tabs: newTabs,
-          activeTabId: newActiveTabId,
-        });
-        return updated;
-      });
-    }
-  }, [panelGroups, terminals, layout]);
-
-  // Handle terminal session creation
-  const handleSessionCreated = useCallback((terminalId: string, sessionId: string, shellPid: number) => {
-    setTerminals((prev) => {
-      const terminal = prev.get(terminalId);
-      if (!terminal) return prev;
-      const updated = new Map(prev);
-      updated.set(terminalId, { ...terminal, sessionId, shellPid });
-      return updated;
-    });
-  }, []);
-
-  // Handle child processes change
-  const handleChildProcessesChange = useCallback((terminalId: string, childProcesses: ChildProcessInfo[]) => {
-    setTerminals((prev) => {
-      const terminal = prev.get(terminalId);
-      if (!terminal) return prev;
-      // Only update if actually changed
-      const prevPids = terminal.childProcesses?.map(p => p.pid).sort().join(',') || '';
-      const nextPids = childProcesses.map(p => p.pid).sort().join(',');
-      if (prevPids === nextPids) return prev;
-
-      const updated = new Map(prev);
-      updated.set(terminalId, { ...terminal, childProcesses });
-      return updated;
-    });
-  }, []);
-
-  // Handle terminal exit
-  const handleTerminalExit = useCallback((groupId: string, tabId: string) => {
-    closeTab(groupId, tabId);
-  }, [closeTab]);
-
-  // Tab management
-  const setActiveTab = useCallback((groupId: string, tabId: string) => {
-    setPanelGroups((prev) => {
-      const group = prev.get(groupId);
-      if (!group) return prev;
-      const updated = new Map(prev);
-      updated.set(groupId, { ...group, activeTabId: tabId });
-      return updated;
-    });
-    setActiveGroupId(groupId);
-  }, []);
-
   // Handle external focus request (e.g., from SessionsBar click or sidebar click)
   useEffect(() => {
     if (!selectedSessionId) return;
 
     // Case 1: MCP session ID (format: mcp-{pid})
-    // Session IDs from MCP server are in the format `mcp-{pid}`
     const pidMatch = selectedSessionId.match(/^mcp-(\d+)$/);
     if (pidMatch) {
       const targetPid = parseInt(pidMatch[1], 10);
@@ -584,7 +82,6 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
       // Find the terminal with this child process PID
       for (const [terminalId, terminal] of terminals.entries()) {
         if (terminal.childProcesses?.some((p) => p.pid === targetPid)) {
-          // Find which group and tab contains this terminal
           for (const [groupId, group] of panelGroups.entries()) {
             const tab = group.tabs.find((t) => t.terminalId === terminalId);
             if (tab) {
@@ -615,80 +112,7 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     selectTerminal(null);
   }, [selectedSessionId, terminals, panelGroups, setActiveTab, selectTerminal]);
 
-  const updateTabTitle = useCallback(async (groupId: string, tabId: string, title: string) => {
-    // Find the terminal's sessionId
-    const group = panelGroups.get(groupId);
-    if (!group) return;
-    const tab = group.tabs.find(t => t.id === tabId);
-    if (!tab) return;
-    const terminal = terminals.get(tab.terminalId);
-    if (!terminal || terminal.sessionId.startsWith('pending-')) return;
-
-    // Update backend (source of truth)
-    try {
-      await invoke('terminal_update', { sessionId: terminal.sessionId, title, color: null });
-    } catch (err) {
-      console.error('Failed to update terminal title:', err);
-      return;
-    }
-
-    // Update local state to match
-    setPanelGroups((prev) => {
-      const g = prev.get(groupId);
-      if (!g) return prev;
-      const updated = new Map(prev);
-      updated.set(groupId, {
-        ...g,
-        tabs: g.tabs.map((t) => (t.id === tabId ? { ...t, title } : t)),
-      });
-      return updated;
-    });
-    setTerminals((prev) => {
-      const t = prev.get(tab.terminalId);
-      if (!t) return prev;
-      const updated = new Map(prev);
-      updated.set(tab.terminalId, { ...t, title });
-      return updated;
-    });
-  }, [panelGroups, terminals]);
-
-  const updateTabColor = useCallback(async (groupId: string, tabId: string, color: string | undefined) => {
-    // Find the terminal's sessionId
-    const group = panelGroups.get(groupId);
-    if (!group) return;
-    const tab = group.tabs.find(t => t.id === tabId);
-    if (!tab) return;
-    const terminal = terminals.get(tab.terminalId);
-    if (!terminal || terminal.sessionId.startsWith('pending-')) return;
-
-    // Update backend (source of truth) - pass color as Option<Option<String>>
-    try {
-      await invoke('terminal_update', { sessionId: terminal.sessionId, title: null, color: color ?? null });
-    } catch (err) {
-      console.error('Failed to update terminal color:', err);
-      return;
-    }
-
-    // Update local state to match
-    setPanelGroups((prev) => {
-      const g = prev.get(groupId);
-      if (!g) return prev;
-      const updated = new Map(prev);
-      updated.set(groupId, {
-        ...g,
-        tabs: g.tabs.map((t) => (t.id === tabId ? { ...t, color } : t)),
-      });
-      return updated;
-    });
-    setTerminals((prev) => {
-      const t = prev.get(tab.terminalId);
-      if (!t) return prev;
-      const updated = new Map(prev);
-      updated.set(tab.terminalId, { ...t, color });
-      return updated;
-    });
-  }, [panelGroups, terminals]);
-
+  // Rename dialog handlers
   const openRenameDialog = useCallback((groupId: string, tabId: string, currentTitle: string) => {
     setRenameTarget({ groupId, tabId });
     setRenameValue(currentTitle);
@@ -704,6 +128,13 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     setRenameValue('');
   }, [renameTarget, renameValue, updateTabTitle]);
 
+  const handleRenameCancel = useCallback(() => {
+    setRenameDialogOpen(false);
+    setRenameTarget(null);
+    setRenameValue('');
+  }, []);
+
+  // Open external terminal
   const openExternalTerminal = useCallback(async () => {
     try {
       await invoke('open_claude_terminal', { workingDir });
@@ -713,15 +144,17 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
   }, [workingDir]);
 
   // Drag and drop handlers
-  const handleDragStart = useCallback((e: React.DragEvent, groupId: string, tabId: string) => {
-    setDraggedTab({ groupId, tabId });
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', `${groupId}:${tabId}`);
-    // Add a slight delay to allow the drag image to be set
-    setTimeout(() => {
-      (e.target as HTMLElement).style.opacity = '0.5';
-    }, 0);
-  }, []);
+  const handleDragStart = useCallback(
+    (groupId: string, tabId: string, e: React.DragEvent) => {
+      setDraggedTab({ groupId, tabId });
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', `${groupId}:${tabId}`);
+      setTimeout(() => {
+        (e.target as HTMLElement).style.opacity = '0.5';
+      }, 0);
+    },
+    []
+  );
 
   const handleDragEnd = useCallback((e: React.DragEvent) => {
     (e.target as HTMLElement).style.opacity = '1';
@@ -729,7 +162,7 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     setDropTarget(null);
   }, []);
 
-  const handleDragOver = useCallback((e: React.DragEvent, groupId: string, index: number) => {
+  const handleDragOver = useCallback((groupId: string, index: number, e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     setDropTarget({ groupId, index });
@@ -739,79 +172,20 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     setDropTarget(null);
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent, targetGroupId: string, targetIndex: number) => {
-    e.preventDefault();
-    if (!draggedTab) return;
+  const handleDrop = useCallback(
+    (targetGroupId: string, targetIndex: number, e: React.DragEvent) => {
+      e.preventDefault();
+      if (!draggedTab) return;
 
-    const { groupId: sourceGroupId, tabId: sourceTabId } = draggedTab;
-    const sourceGroup = panelGroups.get(sourceGroupId);
-    const targetGroup = panelGroups.get(targetGroupId);
+      moveTab(draggedTab.groupId, draggedTab.tabId, targetGroupId, targetIndex);
+      setDraggedTab(null);
+      setDropTarget(null);
+    },
+    [draggedTab, moveTab]
+  );
 
-    if (!sourceGroup || !targetGroup) return;
-
-    const sourceTabIndex = sourceGroup.tabs.findIndex((t) => t.id === sourceTabId);
-    if (sourceTabIndex === -1) return;
-
-    const tab = sourceGroup.tabs[sourceTabIndex];
-
-    if (sourceGroupId === targetGroupId) {
-      // Reorder within same group
-      if (sourceTabIndex === targetIndex || sourceTabIndex === targetIndex - 1) {
-        // No change needed
-        setDraggedTab(null);
-        setDropTarget(null);
-        return;
-      }
-
-      const newTabs = [...sourceGroup.tabs];
-      newTabs.splice(sourceTabIndex, 1);
-      const insertIndex = sourceTabIndex < targetIndex ? targetIndex - 1 : targetIndex;
-      newTabs.splice(insertIndex, 0, tab);
-
-      setPanelGroups((prev) => {
-        const updated = new Map(prev);
-        updated.set(sourceGroupId, { ...sourceGroup, tabs: newTabs });
-        return updated;
-      });
-    } else {
-      // Move to different group
-      const newSourceTabs = sourceGroup.tabs.filter((t) => t.id !== sourceTabId);
-      const newTargetTabs = [...targetGroup.tabs];
-      newTargetTabs.splice(targetIndex, 0, tab);
-
-      setPanelGroups((prev) => {
-        const updated = new Map(prev);
-
-        // Update source group
-        if (newSourceTabs.length === 0) {
-          // Remove empty group
-          updated.delete(sourceGroupId);
-          // Update layout
-          if (layout) {
-            const newLayout = removePanelGroupFromLayout(layout, sourceGroupId);
-            setLayout(newLayout);
-          }
-        } else {
-          const newActiveTabId = sourceGroup.activeTabId === sourceTabId
-            ? newSourceTabs[Math.min(sourceTabIndex, newSourceTabs.length - 1)]?.id || null
-            : sourceGroup.activeTabId;
-          updated.set(sourceGroupId, { ...sourceGroup, tabs: newSourceTabs, activeTabId: newActiveTabId });
-        }
-
-        // Update target group
-        updated.set(targetGroupId, { ...targetGroup, tabs: newTargetTabs, activeTabId: tab.id });
-        return updated;
-      });
-
-      setActiveGroupId(targetGroupId);
-    }
-
-    setDraggedTab(null);
-    setDropTarget(null);
-  }, [draggedTab, panelGroups, layout]);
-
-  // HTML5 Drag handlers for ticket drop
-  const handleTicketDragOver = useCallback((e: React.DragEvent, groupId: string) => {
+  // Ticket drop handlers
+  const handleTicketDragOver = useCallback((groupId: string, e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     setTicketDropTarget(groupId);
@@ -821,491 +195,178 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
     setTicketDropTarget(null);
   }, []);
 
-  const handleTicketDrop = useCallback(async (e: React.DragEvent, groupId: string) => {
-    e.preventDefault();
-    setTicketDropTarget(null);
+  const handleTicketDrop = useCallback(
+    async (groupId: string, e: React.DragEvent) => {
+      e.preventDefault();
+      setTicketDropTarget(null);
 
-    const ticketTitle = e.dataTransfer.getData('application/x-ticket-title') || e.dataTransfer.getData('text/plain');
-    if (!ticketTitle) return;
+      const ticketTitle =
+        e.dataTransfer.getData('application/x-ticket-title') ||
+        e.dataTransfer.getData('text/plain');
+      if (!ticketTitle) return;
 
-    // Find the active terminal in this group
-    const group = panelGroups.get(groupId);
-    if (!group?.activeTabId) return;
+      // Find the active terminal in this group
+      const group = panelGroups.get(groupId);
+      if (!group?.activeTabId) return;
 
-    const tab = group.tabs.find((t) => t.id === group.activeTabId);
-    if (!tab) return;
+      const tab = group.tabs.find((t) => t.id === group.activeTabId);
+      if (!tab) return;
 
-    const terminal = terminals.get(tab.terminalId);
-    if (!terminal || terminal.sessionId.startsWith('pending-')) return;
+      const terminal = terminals.get(tab.terminalId);
+      if (!terminal || terminal.sessionId.startsWith('pending-')) return;
 
-    // Write the command to the terminal
-    const command = `${ticketTitle} 진행해`;
-    try {
-      await invoke('terminal_write', { sessionId: terminal.sessionId, data: command });
-    } catch (err) {
-      console.error('Failed to write to terminal:', err);
+      // Write the command to the terminal
+      const command = `${ticketTitle} 진행해`;
+      try {
+        await invoke('terminal_write', { sessionId: terminal.sessionId, data: command });
+      } catch (err) {
+        console.error('Failed to write to terminal:', err);
+      }
+    },
+    [panelGroups, terminals]
+  );
+
+  // Handle new terminal button
+  const handleNewTerminal = useCallback(() => {
+    if (!layout) {
+      initializeLayout();
+    } else if (activeGroupId) {
+      addTabToGroup(activeGroupId);
     }
-  }, [panelGroups, terminals]);
+  }, [layout, activeGroupId, initializeLayout, addTabToGroup]);
 
-  // Check if MCP server is running in a terminal
-  const isMcpRunning = useCallback((terminal: TerminalInstance | undefined): boolean => {
-    if (!terminal?.childProcesses?.length) return false;
-    return terminal.childProcesses.some(p =>
-      p.name.toLowerCase().includes('awesome-claude') ||
-      p.cmd.toLowerCase().includes('awesome-claude') ||
-      p.cmd.toLowerCase().includes('mcp-server')
-    );
-  }, []);
-
-  // Check if Claude is running in a terminal
-  const isClaudeRunning = useCallback((terminal: TerminalInstance | undefined): boolean => {
-    if (!terminal?.childProcesses?.length) return false;
-    return terminal.childProcesses.some(p =>
-      p.name.toLowerCase().includes('claude') ||
-      p.cmd.toLowerCase().includes('claude')
-    );
-  }, []);
-
-  // Get meaningful process labels from child processes
-  const getProcessLabels = useCallback((terminal: TerminalInstance | undefined): string[] => {
-    if (!terminal?.childProcesses?.length) return [];
-
-    const labels: string[] = [];
-    for (const p of terminal.childProcesses) {
-      const cmd = p.cmd.toLowerCase();
-      const name = p.name.toLowerCase();
-
-      // Skip shell, system, and common short-lived processes
-      if (['powershell.exe', 'powershell', 'cmd.exe', 'cmd', 'conhost.exe', 'conhost', 'bash', 'sh', 'zsh', 'git', 'git.exe'].includes(name)) {
-        continue;
-      }
-
-      // Claude Code
-      if (cmd.includes('claude') && (cmd.includes('cli') || name.includes('claude'))) {
-        if (!labels.includes('claude')) labels.push('claude');
-        continue;
-      }
-
-      // MCP server
-      if (cmd.includes('mcp-server') || cmd.includes('awesome-claude')) {
-        if (!labels.includes('mcp')) labels.push('mcp');
-        continue;
-      }
-
-      // Node scripts - extract meaningful name
-      if (name === 'node.exe' || name === 'node') {
-        // Skip intermediate processes
-        if (cmd.includes('npx-cli.js') || cmd.includes('preflight.cjs') || cmd.includes('loader.mjs')) {
-          continue;
-        }
-        // Try to extract script name
-        const scriptMatch = cmd.match(/([^/\\]+)\.(js|ts|mjs|cjs)(?:\s|$)/i);
-        if (scriptMatch) {
-          const script = scriptMatch[1].toLowerCase();
-          if (!labels.includes(script) && script !== 'cli' && script !== 'index') {
-            labels.push(script);
-          }
-        }
-        continue;
-      }
-
-      // Python scripts
-      if (name === 'python.exe' || name === 'python' || name === 'python3') {
-        const scriptMatch = cmd.match(/([^/\\]+)\.py(?:\s|$)/i);
-        if (scriptMatch && !labels.includes(scriptMatch[1])) {
-          labels.push(scriptMatch[1]);
-        }
-        continue;
-      }
-
-      // Other processes - use name without extension
-      const cleanName = name.replace(/\.exe$/i, '');
-      if (!labels.includes(cleanName)) {
-        labels.push(cleanName);
-      }
-    }
-
-    return labels.slice(0, 3); // Limit to 3 labels
-  }, []);
+  // Handle terminal exit
+  const handleTerminalExit = useCallback(
+    (groupId: string, tabId: string) => {
+      closeTab(groupId, tabId);
+    },
+    [closeTab]
+  );
 
   // Render a single panel group
-  const renderPanelGroup = useCallback((groupId: string) => {
-    const group = panelGroups.get(groupId);
-    if (!group) return null;
+  const renderPanelGroup = useCallback(
+    (groupId: string) => {
+      const group = panelGroups.get(groupId);
+      if (!group) return null;
 
-    const activeTab = group.tabs.find((t) => t.id === group.activeTabId);
-    const activeTerminal = activeTab ? terminals.get(activeTab.terminalId) : null;
-    const isActiveGroup = activeGroupId === groupId;
+      const isActiveGroup = activeGroupId === groupId;
 
-    return (
-      <div
-        className={cn(
-          'flex flex-col h-full',
-          isActiveGroup ? 'ring-1 ring-primary/50' : ''
-        )}
-        onClick={() => setActiveGroupId(groupId)}
-      >
-        {/* Tab bar */}
-        <div className="flex items-center h-12 bg-card border-b border-border px-1">
-          <ScrollArea className="flex-1">
-            <div
-              className="flex items-center"
-              onDragLeave={handleDragLeave}
-            >
-              {group.tabs.map((tab, index) => {
-                const tabTerminal = terminals.get(tab.terminalId);
-                const mcpRunning = isMcpRunning(tabTerminal);
-                const claudeRunning = isClaudeRunning(tabTerminal);
-                const processLabels = getProcessLabels(tabTerminal);
-                return (
-                <Fragment key={tab.id}>
-                  {/* Drop indicator before tab */}
-                  <div
-                    className={cn(
-                      'w-0.5 h-5 rounded transition-all',
-                      dropTarget?.groupId === groupId && dropTarget?.index === index
-                        ? 'bg-primary w-1'
-                        : 'bg-transparent'
-                    )}
-                    onDragOver={(e) => handleDragOver(e, groupId, index)}
-                    onDrop={(e) => handleDrop(e, groupId, index)}
-                  />
-                  <ContextMenu>
-                    <ContextMenuTrigger asChild>
-                      <div
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, groupId, tab.id)}
-                        onDragEnd={handleDragEnd}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setActiveTab(groupId, tab.id);
-                        }}
-                        className={cn(
-                          'group flex items-center gap-2 px-3 py-2 text-sm rounded-t transition-colors cursor-pointer',
-                          group.activeTabId === tab.id
-                            ? 'bg-background text-foreground'
-                            : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
-                          draggedTab?.tabId === tab.id && 'opacity-50'
-                        )}
-                      >
-                        {/* Show animal emoji if title is an animal name, otherwise terminal icon */}
-                        {getAnimalEmoji(tab.title, true) ? (
-                          <span className="text-base shrink-0">{getAnimalEmoji(tab.title, true)}</span>
-                        ) : tab.color ? (
-                          <div
-                            className="w-3 h-3 rounded-full shrink-0"
-                            style={{ backgroundColor: tab.color }}
-                          />
-                        ) : (
-                          <TerminalIcon className="w-4 h-4 shrink-0" />
-                        )}
-                        <div className="flex flex-col min-w-0">
-                          <span className="truncate max-w-[120px]">{tab.title}</span>
-                          {processLabels.length > 0 && (
-                            <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
-                              {processLabels.join(' · ')}
-                            </span>
-                          )}
-                        </div>
-                        <span
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            closeTab(groupId, tab.id);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 hover:bg-muted rounded p-1 transition-opacity cursor-pointer"
-                        >
-                          <XIcon className="w-4 h-4" />
-                        </span>
-                      </div>
-                    </ContextMenuTrigger>
-                    <ContextMenuContent>
-                      <ContextMenuItem onClick={() => openRenameDialog(groupId, tab.id, tab.title)}>
-                        <PencilIcon className="w-4 h-4 mr-2" />
-                        Rename
-                      </ContextMenuItem>
-                      <ContextMenuSub>
-                        <ContextMenuSubTrigger>
-                          <PaletteIcon className="w-4 h-4 mr-2" />
-                          Color
-                        </ContextMenuSubTrigger>
-                        <ContextMenuSubContent>
-                          {TAB_COLORS.map((color) => (
-                            <ContextMenuItem
-                              key={color.name}
-                              onClick={() => updateTabColor(groupId, tab.id, color.value)}
-                            >
-                              <div className="flex items-center gap-2">
-                                {color.value ? (
-                                  <div
-                                    className="w-3 h-3 rounded-full border border-border"
-                                    style={{ backgroundColor: color.value }}
-                                  />
-                                ) : (
-                                  <div className="w-3 h-3 rounded-full border border-border bg-muted" />
-                                )}
-                                {color.name}
-                              </div>
-                            </ContextMenuItem>
-                          ))}
-                        </ContextMenuSubContent>
-                      </ContextMenuSub>
-                      <ContextMenuSeparator />
-                      <ContextMenuItem
-                        className="text-destructive"
-                        onClick={() => closeTab(groupId, tab.id)}
-                      >
-                        <XIcon className="w-4 h-4 mr-2" />
-                        Close
-                      </ContextMenuItem>
-                    </ContextMenuContent>
-                  </ContextMenu>
-                </Fragment>
-              );
-              })}
-              {/* Drop indicator after last tab */}
-              <div
-                className={cn(
-                  'w-0.5 h-5 rounded transition-all',
-                  dropTarget?.groupId === groupId && dropTarget?.index === group.tabs.length
-                    ? 'bg-primary w-1'
-                    : 'bg-transparent'
-                )}
-                onDragOver={(e) => handleDragOver(e, groupId, group.tabs.length)}
-                onDrop={(e) => handleDrop(e, groupId, group.tabs.length)}
-              />
-            </div>
-            <ScrollBar orientation="horizontal" />
-          </ScrollArea>
-
-          <div className="flex items-center gap-0.5 px-1 border-l border-border ml-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-5 w-5"
-              onClick={(e) => {
-                e.stopPropagation();
-                addTabToGroup(groupId);
-              }}
-              title="New tab"
-            >
-              <PlusIcon className="w-3 h-3" />
-            </Button>
-          </div>
-        </div>
-
-        {/* Terminal content - render all tabs but hide inactive ones */}
-        <div
-          className={cn(
-            'flex-1 min-h-0 relative transition-all',
-            ticketDropTarget === groupId && 'ring-2 ring-primary ring-inset bg-primary/5'
-          )}
-          onDragOver={(e) => handleTicketDragOver(e, groupId)}
-          onDragLeave={handleTicketDragLeave}
-          onDrop={(e) => handleTicketDrop(e, groupId)}
-        >
-          {/* Drop indicator overlay */}
-          {ticketDropTarget === groupId && (
-            <div className="absolute inset-0 flex items-center justify-center bg-primary/10 z-50 pointer-events-none">
-              <div className="bg-card border border-primary rounded-lg px-4 py-2 shadow-lg">
-                <span className="text-sm font-medium text-primary">Drop to send command</span>
-              </div>
-            </div>
-          )}
-          {group.tabs.map((tab) => {
-            const terminal = terminals.get(tab.terminalId);
-            if (!terminal) return null;
-            const isActiveTab = tab.id === group.activeTabId;
-            return (
-              <div
-                key={tab.terminalId}
-                className={cn(
-                  'absolute inset-0',
-                  isActiveTab ? 'visible' : 'invisible'
-                )}
-              >
-                <XtermTerminal
-                  sessionId={terminal.sessionId}
-                  workingDir={workingDir}
-                  isActive={isActiveGroup && isActiveTab}
-                  isVisible={isVisible}
-                  webglEnabled={webglEnabled}
-                  onSessionCreated={(sessionId, shellPid) =>
-                    handleSessionCreated(tab.terminalId, sessionId, shellPid)
-                  }
-                  onChildProcessesChange={(processes) =>
-                    handleChildProcessesChange(tab.terminalId, processes)
-                  }
-                  onExit={() => handleTerminalExit(groupId, tab.id)}
-                />
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }, [
-    panelGroups,
-    terminals,
-    activeGroupId,
-    workingDir,
-    draggedTab,
-    dropTarget,
-    ticketDropTarget,
-    setActiveTab,
-    closeTab,
-    addTabToGroup,
-    openRenameDialog,
-    updateTabColor,
-    handleSessionCreated,
-    handleChildProcessesChange,
-    handleTerminalExit,
-    handleDragStart,
-    handleDragEnd,
-    handleDragOver,
-    handleDragLeave,
-    handleDrop,
-    handleTicketDragOver,
-    handleTicketDragLeave,
-    handleTicketDrop,
-    isMcpRunning,
-    isClaudeRunning,
-    getProcessLabels,
-    webglEnabled,
-  ]);
+      return (
+        <TerminalPanelGroup
+          key={groupId}
+          groupId={groupId}
+          group={group}
+          terminals={terminals}
+          isActiveGroup={isActiveGroup}
+          workingDir={workingDir}
+          isVisible={isVisible}
+          webglEnabled={webglEnabled}
+          onGroupClick={() => setActiveGroupId(groupId)}
+          onTabClick={(tabId) => setActiveTab(groupId, tabId)}
+          onTabClose={(tabId) => closeTab(groupId, tabId)}
+          onAddTab={() => addTabToGroup(groupId)}
+          onRenameTab={(tabId, title) => openRenameDialog(groupId, tabId, title)}
+          onColorChange={(tabId, color) => updateTabColor(groupId, tabId, color)}
+          onSessionCreated={handleSessionCreated}
+          onChildProcessesChange={handleChildProcessesChange}
+          onTerminalExit={(tabId) => handleTerminalExit(groupId, tabId)}
+          draggedTab={draggedTab}
+          onDragStart={(tabId, e) => handleDragStart(groupId, tabId, e)}
+          onDragEnd={handleDragEnd}
+          onDragOver={(index, e) => handleDragOver(groupId, index, e)}
+          onDragLeave={handleDragLeave}
+          onDrop={(index, e) => handleDrop(groupId, index, e)}
+          dropTargetIndex={dropTarget?.groupId === groupId ? dropTarget.index : null}
+          onTicketDragOver={(e) => handleTicketDragOver(groupId, e)}
+          onTicketDragLeave={handleTicketDragLeave}
+          onTicketDrop={(e) => handleTicketDrop(groupId, e)}
+          isTicketDropTarget={ticketDropTarget === groupId}
+        />
+      );
+    },
+    [
+      panelGroups,
+      terminals,
+      activeGroupId,
+      workingDir,
+      isVisible,
+      webglEnabled,
+      draggedTab,
+      dropTarget,
+      ticketDropTarget,
+      setActiveGroupId,
+      setActiveTab,
+      closeTab,
+      addTabToGroup,
+      openRenameDialog,
+      updateTabColor,
+      handleSessionCreated,
+      handleChildProcessesChange,
+      handleTerminalExit,
+      handleDragStart,
+      handleDragEnd,
+      handleDragOver,
+      handleDragLeave,
+      handleDrop,
+      handleTicketDragOver,
+      handleTicketDragLeave,
+      handleTicketDrop,
+    ]
+  );
 
   // Render layout recursively
-  const renderLayout = useCallback((node: LayoutNode): React.ReactNode => {
-    if (node.type === 'panel-group') {
-      return renderPanelGroup(node.groupId);
-    }
+  const renderLayout = useCallback(
+    (node: LayoutNode): React.ReactNode => {
+      if (node.type === 'panel-group') {
+        return renderPanelGroup(node.groupId);
+      }
 
-    const orientation = node.direction === 'horizontal' ? 'horizontal' : 'vertical';
+      const orientation = node.direction === 'horizontal' ? 'horizontal' : 'vertical';
 
-    return (
-      <Group orientation={orientation}>
-        {node.children.map((child, index) => (
-          <Fragment key={index}>
-            {index > 0 && (
-              <Separator
-                className={
-                  orientation === 'horizontal'
-                    ? 'w-1 bg-border hover:bg-primary/50 transition-colors cursor-col-resize'
-                    : 'h-1 bg-border hover:bg-primary/50 transition-colors cursor-row-resize'
-                }
-              />
-            )}
-            <Panel minSize={15} defaultSize={100 / node.children.length}>
-              {renderLayout(child)}
-            </Panel>
-          </Fragment>
-        ))}
-      </Group>
-    );
-  }, [renderPanelGroup]);
+      return (
+        <Group orientation={orientation}>
+          {node.children.map((child, index) => (
+            <Fragment key={index}>
+              {index > 0 && (
+                <Separator
+                  className={
+                    orientation === 'horizontal'
+                      ? 'w-1 bg-border hover:bg-primary/50 transition-colors cursor-col-resize'
+                      : 'h-1 bg-border hover:bg-primary/50 transition-colors cursor-row-resize'
+                  }
+                />
+              )}
+              <Panel minSize={15} defaultSize={100 / node.children.length}>
+                {renderLayout(child)}
+              </Panel>
+            </Fragment>
+          ))}
+        </Group>
+      );
+    },
+    [renderPanelGroup]
+  );
 
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Top toolbar */}
-      <div className="flex items-center h-9 bg-card border-b border-border px-2">
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={() => {
-              if (!layout) {
-                initializeLayout();
-              } else if (activeGroupId) {
-                addTabToGroup(activeGroupId);
-              }
-            }}
-            title="New terminal"
-          >
-            <PlusIcon className="w-3.5 h-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={() => splitPanelGroup('horizontal')}
-            disabled={!activeGroupId}
-            title="Split right"
-          >
-            <SplitSquareHorizontalIcon className="w-3.5 h-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={() => splitPanelGroup('vertical')}
-            disabled={!activeGroupId}
-            title="Split down"
-          >
-            <SplitSquareVerticalIcon className="w-3.5 h-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={openExternalTerminal}
-            title="Open Claude in external terminal"
-          >
-            <ExternalLinkIcon className="w-3.5 h-3.5" />
-          </Button>
-
-          <div className="w-px h-4 bg-border mx-1" />
-
-          <Button
-            variant={webglEnabled ? 'default' : 'ghost'}
-            size="sm"
-            className={cn(
-              'h-6 gap-1.5 text-xs px-2',
-              webglEnabled && 'bg-primary/20 hover:bg-primary/30 text-primary'
-            )}
-            onClick={() => setWebglEnabled(!webglEnabled)}
-            title={webglEnabled ? 'WebGL enabled (GPU accelerated)' : 'WebGL disabled (Canvas renderer)'}
-          >
-            {webglEnabled ? (
-              <ZapIcon className="w-3 h-3" />
-            ) : (
-              <MonitorIcon className="w-3 h-3" />
-            )}
-            {webglEnabled ? 'WebGL' : 'Canvas'}
-          </Button>
-        </div>
-
-        <div className="flex-1" />
-
-        {onClose && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={onClose}
-            title="Close panel"
-          >
-            <XIcon className="w-3.5 h-3.5" />
-          </Button>
-        )}
-      </div>
+      <TerminalToolbar
+        hasLayout={!!layout}
+        hasActiveGroup={!!activeGroupId}
+        webglEnabled={webglEnabled}
+        onNewTerminal={handleNewTerminal}
+        onSplitHorizontal={() => splitPanelGroup('horizontal')}
+        onSplitVertical={() => splitPanelGroup('vertical')}
+        onOpenExternal={openExternalTerminal}
+        onToggleWebgl={() => setWebglEnabled(!webglEnabled)}
+        onClose={onClose}
+      />
 
       {/* Main content with Macro Panel */}
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="flex-1 min-h-0">
           {!layout ? (
-            <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-              <TerminalIcon className="w-12 h-12 opacity-50" />
-              <p className="text-sm">No active terminals</p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={initializeLayout}
-                className="gap-2"
-              >
-                <PlusIcon className="w-4 h-4" />
-                New Terminal
-              </Button>
-            </div>
+            <EmptyState onCreateTerminal={initializeLayout} />
           ) : (
             renderLayout(layout)
           )}
@@ -1315,57 +376,19 @@ export function TerminalPanel({ workingDir, projectName, onClose, isVisible = tr
         {layout && (
           <MacroPanel
             workingDir={workingDir}
-            terminalSessionId={(() => {
-              // Try active terminal first
-              if (activeGroupId) {
-                const group = panelGroups.get(activeGroupId);
-                if (group?.activeTabId) {
-                  const tab = group.tabs.find((t) => t.id === group.activeTabId);
-                  if (tab) {
-                    const terminal = terminals.get(tab.terminalId);
-                    if (terminal && !terminal.sessionId.startsWith('pending-')) {
-                      return terminal.sessionId;
-                    }
-                  }
-                }
-              }
-              // Fallback: find any valid terminal session
-              for (const terminal of terminals.values()) {
-                if (!terminal.sessionId.startsWith('pending-')) {
-                  return terminal.sessionId;
-                }
-              }
-              return null;
-            })()}
+            terminalSessionId={getActiveTerminalSessionId()}
           />
         )}
       </div>
 
       {/* Rename Dialog */}
-      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
-        <DialogContent className="sm:max-w-[300px]">
-          <DialogHeader>
-            <DialogTitle>Rename Terminal</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
-            placeholder="Terminal name"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                handleRename();
-              }
-            }}
-            autoFocus
-          />
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setRenameDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleRename}>Save</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <RenameDialog
+        open={renameDialogOpen}
+        value={renameValue}
+        onValueChange={setRenameValue}
+        onSave={handleRename}
+        onCancel={handleRenameCancel}
+      />
     </div>
   );
 }

@@ -91,8 +91,10 @@ export function EditorPanel({ workingDir }: EditorPanelProps) {
     if (ext.viewMode === 'replace') return 'replace';
     if (ext.viewMode === 'split' && state?.viewMode === 'split') return 'split';
     if (ext.viewMode === 'toggle') {
+      // For toggle mode (markdown), default to split view
       if (state?.viewMode === 'preview') return 'replace';
-      if (state?.viewMode === 'split') return 'split';
+      if (state?.viewMode === 'edit') return 'editor';
+      return 'split'; // default: split view
     }
     return 'editor';
   }, [extensionView, extensionContext]);
@@ -225,8 +227,10 @@ export function EditorPanel({ workingDir }: EditorPanelProps) {
             if (ext.viewMode === 'replace') tabViewMode = 'replace';
             else if (ext.viewMode === 'split' && tabExtensionState?.viewMode === 'split') tabViewMode = 'split';
             else if (ext.viewMode === 'toggle') {
+              // For toggle mode (markdown), default to split view
               if (tabExtensionState?.viewMode === 'preview') tabViewMode = 'replace';
-              else if (tabExtensionState?.viewMode === 'split') tabViewMode = 'split';
+              else if (tabExtensionState?.viewMode === 'edit') tabViewMode = 'editor';
+              else tabViewMode = 'split'; // default: split view
             }
           }
 

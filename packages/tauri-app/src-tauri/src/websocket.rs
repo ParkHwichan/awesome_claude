@@ -16,6 +16,7 @@ type SessionMap = Arc<Mutex<HashMap<String, String>>>;
 
 // Terminal session slot - persists across MCP reconnects
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TerminalSessionSlot {
     pub terminal_session_id: String,  // Terminal's session ID (from TerminalManager)
     pub shell_pid: u32,
@@ -100,6 +101,7 @@ impl WebSocketHub {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_port(&self) -> u16 {
         self.port
     }

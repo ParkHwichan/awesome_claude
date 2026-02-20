@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { invoke } from '@tauri-apps/api/core';
+import { services } from '../services';
 
 export interface EditorTab {
   id: string;
@@ -188,17 +188,17 @@ export const useEditorStore = create<EditorState>()(
     });
 
     // Load file content
-    try {
-      const content = await invoke<string>('read_file', { path: filePath });
+    const result = await services.file.readFile(filePath);
+    if (result.success) {
       set({
         tabs: get().tabs.map((tab) =>
           tab.id === tabId
-            ? { ...tab, content, originalContent: content, isLoading: false }
+            ? { ...tab, content: result.data, originalContent: result.data, isLoading: false }
             : tab
         ),
       });
-    } catch (err) {
-      console.error('Failed to read file:', err);
+    } else {
+      console.error('Failed to read file:', result.error.message);
       // Remove the tab on error
       set({
         tabs: get().tabs.filter((tab) => tab.id !== tabId),
@@ -273,8 +273,8 @@ export const useEditorStore = create<EditorState>()(
     const tab = tabs.find((t) => t.id === tabId);
     if (!tab || !tab.isDirty) return;
 
-    try {
-      await invoke('write_file', { path: tab.filePath, content: tab.content });
+    const result = await services.file.writeFile(tab.filePath, tab.content);
+    if (result.success) {
       set({
         tabs: get().tabs.map((t) =>
           t.id === tabId
@@ -282,9 +282,9 @@ export const useEditorStore = create<EditorState>()(
             : t
         ),
       });
-    } catch (err) {
-      console.error('Failed to save file:', err);
-      throw err;
+    } else {
+      console.error('Failed to save file:', result.error.message);
+      throw new Error(result.error.message);
     }
   },
 
@@ -325,23 +325,23 @@ export const useEditorStore = create<EditorState>()(
         if (state?.tabs) {
           state.tabs.forEach((tab: EditorTab) => {
             if (tab.isLoading) {
-              invoke<string>('read_file', { path: tab.filePath })
-                .then((content) => {
+              services.file.readFile(tab.filePath).then((result) => {
+                if (result.success) {
                   useEditorStore.setState((s) => ({
                     tabs: s.tabs.map((t) =>
                       t.id === tab.id
-                        ? { ...t, content, originalContent: content, isLoading: false }
+                        ? { ...t, content: result.data, originalContent: result.data, isLoading: false }
                         : t
                     ),
                   }));
-                })
-                .catch(() => {
+                } else {
                   // File doesn't exist anymore, remove tab
                   useEditorStore.setState((s) => ({
                     tabs: s.tabs.filter((t) => t.id !== tab.id),
                     activeTabId: s.activeTabId === tab.id ? null : s.activeTabId,
                   }));
-                });
+                }
+              });
             }
           });
         }

@@ -4,8 +4,9 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 fn get_db_path() -> PathBuf {
-    let app_data = dirs::data_dir()
-        .or_else(|| dirs::config_dir())
+    // Use config_dir (AppData\Roaming on Windows) to match MCP server location
+    let app_data = dirs::config_dir()
+        .or_else(|| dirs::data_dir())
         .unwrap_or_else(|| PathBuf::from("."));
     app_data.join("awesome-claude").join("data").join("awesome-claude.db")
 }
@@ -96,13 +97,14 @@ pub struct Ticket {
 
 pub fn list_projects() -> Result<Vec<ProjectSummary>> {
     let conn = get_connection()?;
+    // Note: sessions table was removed in migration 14, so active_session_count is always 0
     let mut stmt = conn.prepare(
         "SELECT
             p.id,
             p.name,
             p.working_directory,
             (SELECT COUNT(*) FROM tickets WHERE project_id = p.id) as ticket_count,
-            (SELECT COUNT(*) FROM sessions WHERE project_id = p.id AND status != 'disconnected') as active_session_count,
+            0 as active_session_count,
             (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status = 'pending') as pending_tickets,
             (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status IN ('claimed', 'in_progress')) as in_progress_tickets,
             (SELECT COUNT(*) FROM tickets WHERE project_id = p.id AND status = 'completed') as completed_tickets
@@ -127,55 +129,13 @@ pub fn list_projects() -> Result<Vec<ProjectSummary>> {
 }
 
 pub fn list_sessions() -> Result<Vec<Session>> {
-    let conn = get_connection()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, project_id, name, status, current_ticket_id, last_heartbeat, created_at, metadata
-         FROM sessions
-         WHERE status != 'disconnected'
-         ORDER BY last_heartbeat DESC"
-    )?;
-
-    let rows = stmt.query_map([], |row| {
-        Ok(Session {
-            id: row.get(0)?,
-            project_id: row.get(1)?,
-            name: row.get(2)?,
-            status: row.get(3)?,
-            current_ticket_id: row.get(4)?,
-            last_heartbeat: row.get(5)?,
-            created_at: row.get(6)?,
-            metadata: row.get(7)?,
-        })
-    })?;
-
-    rows.collect()
+    // Sessions table was removed in migration 14 - return empty list
+    Ok(Vec::new())
 }
 
 pub fn cleanup_dead_sessions() -> Result<usize> {
-    let conn = get_connection()?;
-
-    // Clean up sessions that haven't had a heartbeat in 5 minutes
-    // Sessions are now managed by MCP server heartbeats
-    let result = conn.execute(
-        "UPDATE sessions SET status = 'disconnected'
-         WHERE status != 'disconnected'
-         AND datetime(last_heartbeat) < datetime('now', '-5 minutes')",
-        [],
-    )?;
-
-    if result > 0 {
-        println!("[Cleanup] Marked {} stale sessions as disconnected", result);
-
-        // Release claimed tickets from disconnected sessions
-        conn.execute(
-            "UPDATE tickets SET claimed_by = NULL, claimed_at = NULL, status = 'pending'
-             WHERE claimed_by IN (SELECT id FROM sessions WHERE status = 'disconnected')
-             AND status NOT IN ('completed', 'failed')",
-            [],
-        )?;
-    }
-
-    Ok(result)
+    // Sessions table was removed in migration 14 - nothing to clean up
+    Ok(0)
 }
 
 fn parse_json(s: Option<String>) -> Option<Value> {
@@ -367,25 +327,17 @@ pub fn create_project(name: &str, working_directory: &str) -> Result<Project> {
 
 pub fn delete_project(id: &str) -> Result<()> {
     let conn = get_connection()?;
-    // Cascade delete: tickets and sessions first
+    // Cascade delete: tickets first, then project
+    // Note: sessions table was removed in migration 14
     conn.execute("DELETE FROM tickets WHERE project_id = ?", [id])?;
-    conn.execute("DELETE FROM sessions WHERE project_id = ?", [id])?;
     conn.execute("DELETE FROM projects WHERE id = ?", [id])?;
     Ok(())
 }
 
 /// Mark a session as disconnected by ID. Returns (project_id,) on success.
+/// Note: sessions table was removed in migration 14, so we only release claimed tickets
 pub fn mark_session_disconnected(session_id: &str) -> Result<(String,)> {
     let conn = get_connection()?;
-
-    // Get project_id first (may be NULL in new schema)
-    let project_id: Option<String> = conn.query_row(
-        "SELECT project_id FROM sessions WHERE id = ?",
-        [session_id],
-        |row| row.get(0),
-    ).ok();
-
-    let project_id = project_id.unwrap_or_else(|| "unknown".to_string());
 
     // Release any claimed tickets
     conn.execute(
@@ -394,15 +346,9 @@ pub fn mark_session_disconnected(session_id: &str) -> Result<(String,)> {
         [session_id],
     )?;
 
-    // Update session status
-    conn.execute(
-        "UPDATE sessions SET status = 'disconnected', current_ticket_id = NULL WHERE id = ?",
-        [session_id],
-    )?;
+    println!("[DB] Released tickets for session {}", session_id);
 
-    println!("[DB] Marked session {} as disconnected (project: {})", session_id, project_id);
-
-    Ok((project_id,))
+    Ok(("unknown".to_string(),))
 }
 
 // ============ Ticket Events ============
